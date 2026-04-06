@@ -4,7 +4,7 @@
 
 ---
 
-## 🏗️ Architecture: Why REST + WebSocket?
+## Architecture: Why REST + WebSocket?
 
 In a high-stakes trading environment, transparency and reliability are paramount. We use a **Dual-Channel Architecture**:
 
@@ -13,7 +13,7 @@ In a high-stakes trading environment, transparency and reliability are paramount
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### 1. Prerequisites
 - Python 3.10+
@@ -36,7 +36,7 @@ The server will start at `http://localhost:8000`.
 
 ---
 
-## 📮 Detailed Postman Testing Guide
+## Detailed Postman Testing Guide
 
 Testing AIDAAN requires a specific flow because of the **JWT Security Layer**. Follow these steps:
 
@@ -88,13 +88,13 @@ Postman now supports WebSocket testing!
 
 ---
 
-## 🛡️ Compliance Guardrails (Hardcoded)
+## Compliance Guardrails (Hardcoded)
 - **Zero Auto-Execution**: Every tool action (like `draft_rfq`) returns a `requires_human_confirm: true` flag. No trade can be executed without manual confirmation.
 - **Non-Advisory Filter**: Asking "Should I buy?" will trigger a compliance block, reframing the response as a factual recap.
 
 ---
 
-## 🎨 Interactive Testing Frontend
+## Interactive Testing Frontend
 
 To see AIDAAN in action with the **Glass Sphere** visual states, we have included a standalone test interface:
 
@@ -110,5 +110,5 @@ To see AIDAAN in action with the **Glass Sphere** visual states, we have include
 
 ---
 
-## 📬 Support
+## Support
 For integration queries, refer to the `walkthrough.md` or contact the **Acquaint SoftTech** lead developer.

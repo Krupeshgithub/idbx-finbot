@@ -8,6 +8,7 @@ import logging
 from typing import Any, Optional
 
 import redis
+import fakeredis
 
 from app.core.config.settings import settings
 
@@ -21,17 +22,24 @@ class CacheService:
     """
 
     def __init__(self):
-        redis_url = getattr(settings, "REDIS_URL", None)
+        """
+        Initialize the Redis client using the configured REDIS_URL.
+        Falls back to fakeredis for local development context if needed.
+        """
+        self.redis_url = getattr(settings, "REDIS_URL", "redis://localhost:6379/0")
 
-        if redis_url:
+        try:
             self.client = redis.from_url(
-                redis_url,
+                self.redis_url,
                 decode_responses=True
             )
+            # Test connection
             self.client.ping()
-            logger.info(f"Connected to Redis at {redis_url}")
-        else:
-            ...
+            logger.info(f"Connected to Redis at {self.redis_url}")
+        except (redis.ConnectionError, redis.TimeoutError) as e:
+            logger.warning(f"Could not connect to Redis at {self.redis_url}: {e}")
+            logger.info("Falling back to FakeStrictRedis for local development compatibility.")
+            self.client = fakeredis.FakeStrictRedis(decode_responses=True)
 
     def set(
         self, 
@@ -48,11 +56,8 @@ class CacheService:
             serialized_value, 
             ex=expire
         )
-    
-    def get(
-        self, 
-        key: str
-    ) -> Optional[Any]:
+
+    def get(self, key: str) -> Optional[Any]:
         """
         Retrieves and deserializes a value from the cache.
         """
@@ -60,11 +65,8 @@ class CacheService:
         if data:
             return json.loads(data)
         return None
-    
-    def delete(
-        self,
-        key: str
-    ):
+
+    def delete(self, key: str):
         """
         Removes a key from the cache.
         """

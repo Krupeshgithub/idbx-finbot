@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     VERTEX_AI_MODEL_NAME: str = "gemini-1.5-pro-002"
     FINBERT_ENDPOINT_ID: Optional[str] = None
     ENABLE_KILL_SWITCH: bool = True
+    
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_EXPIRE: int = 14400  # 4 hours
 
     LSEG_API_BASE_URL: str = "https://api.lseg.com/data"
     LSEG_API_KEY: Optional[str] = None

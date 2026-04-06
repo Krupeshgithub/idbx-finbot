@@ -17,20 +17,12 @@ from app.core.security import (
 router = APIRouter()
 
 
-def safe_password(pw: str) -> str:
-    """
-    Ensures password is safely truncated to MAX_PASSWORD_BYTES.
-    Prevents issues with overly long passwords in hashing functions.
-    """
-    return pw.encode("utf-8")[:settings.MAX_PASSWORD_BYTES].decode("utf-8", errors="ignore")
-
-
 # Mock User Database for Phase 1 (Replace with Real DB in Phase 2)
 MOCK_USERS = {
     "trader-001": {
         "username": "trader-001",
         "email": "trader-001@example.com",
-        "hashed_password": get_password_hash(safe_password("Password"))
+        "hashed_password": get_password_hash("Password123")
     }
 }
 

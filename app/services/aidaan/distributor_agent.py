@@ -27,11 +27,21 @@ class DistributorAgent(BaseAgent):
         """
         Identify liquidity providers and match logic.
         """
+        lowered = text.lower()
+        if "find" in lowered or "search" in lowered:
+            return AidaanMessageResponse(
+                reply="I'm scanning the pool for deep liquidity matches...",
+                bullets=["Pool: IDBX-Internal", "Depth: $500M+", "Status: SCANNING"],
+                actions=[],
+                conversation_id=conversation_id,
+                model=self.get_model_info()
+            )
+
         return AidaanMessageResponse(
-            reply="I have identified several liquidity providers for your request.",
+            reply="Liquidity distribution nodes are optimized for your current desk location (EMEA).",
             bullets=[
                 "Matches Found: IDBX-POOL, LSEG-MATCH",
-                "liquidity Status: READY",
+                "Liquidity Status: READY",
                 "Distribution Node: EMEA-HUB-01"
             ],
             actions=[
@@ -40,6 +50,12 @@ class DistributorAgent(BaseAgent):
                     title="View Matching Grid",
                     payload={"view": "matching_providers"},
                     requires_human_confirm=False
+                ),
+                ActionItem(
+                    kind="distribute_now",
+                    title="Execute Distribution",
+                    payload={"node": "EMEA-HUB-01"},
+                    requires_human_confirm=True
                 )
             ],
             conversation_id=conversation_id,

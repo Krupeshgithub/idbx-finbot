@@ -20,6 +20,7 @@ brain/
 walkthrough.md
 implementation_plan.md
 task.md
+test_frontend.html
 
 # OS files
 .DS_Store

@@ -6,7 +6,6 @@ from typing import Any, Dict, Tuple, Optional, List
 from uuid import uuid4
 
 from app.services.aidaan.base import BaseAgent
-from app.services.aidaan.a2a_service import a2a_service
 from app.services.aidaan.registry import registry
 from app.services.aidaan.session_manager import session_manager
 from app.core.guardrails import guardrails
@@ -49,10 +48,36 @@ class CoordinatorAgent(BaseAgent):
 
         # 0. Load existing context/session state
         session_context = session_manager.get_context(conv_id)
-        # Merge incoming context (if any) with session context
         if context:
             session_context.update(context)
             session_manager.save_context(conv_id, session_context)
+        
+        # 1. Action Callback Handler
+        action_kind = session_context.get("kind")
+        if action_kind == "draft_rfq":
+             return AidaanMessageResponse(
+                reply="RFQ Drafted: EUR/PLN Swap 3M @ 50M EUR. Proceed to distribution?",
+                bullets=["Side: BUY", "Notional: 50,000,000", "Venue: Institutional Hybrid"],
+                actions=[
+                    ActionItem(
+                        kind="confirm_rfq",
+                        title="Yes, Distribute Now",
+                        payload={"kind": "confirm_rfq"},
+                        requires_human_confirm=True
+                    )
+                ],
+                conversation_id=conv_id,
+                model=self.get_model_info()
+            )
+        
+        if action_kind == "confirm_rfq":
+             return AidaanMessageResponse(
+                reply="Distribution active. RFQ is now being priced by LSEG and internal nodes.",
+                bullets=["Status: LIVE", "RFQ ID: RFQ-9912", "Liquidity: 3 Matches"],
+                actions=[],
+                conversation_id=conv_id,
+                model=self.get_model_info()
+            )
 
         # 1. Check Compliance Guardrails
         is_advisory, reason = guardrails.is_advisory(text)
@@ -78,32 +103,38 @@ class CoordinatorAgent(BaseAgent):
                     context=session_context
                 )
         
-        # 4. Fallback: Coordinator handles generic queries or RFQ drafts.
+        # 4. Phase 1 Static Handlers
         lowered_text = text.lower()
         if "rfq" in lowered_text:
             return AidaanMessageResponse(
                 reply="I can help draft an RFQ. What are the details of the request?",
-                bullets=[],
+                bullets=["Standard 50M threshold applied"],
                 actions=[
                     ActionItem(
                         kind="draft_rfq",
                         title="Draft RFQ (review & send)",
-                        payload={"instrument": "EUR/PLN Swap 3M", "side": "BUY", "notional": 50000000},
+                        payload={"kind": "draft_rfq"},
                         requires_human_confirm=True
                     )
                 ],
                 conversation_id=conv_id,
                 model=self.get_model_info()
             )
-            
+
         return AidaanMessageResponse(
-            reply="I'm here to assist with your trading needs. Could you please clarify your request?",
-            bullets=["Phase 1 modularity active", "Agent Registry initialized"],
+            reply="AIDAAN is standing by. You can ask about Risk, Sentiment, or Liquidity Distribution.",
+            bullets=["Phase 1 modularity active", "Gemini 1.5 Pro: Routing Only"],
             actions=[
                 ActionItem(
-                    kind="ask_clarification",
-                    title="Ask for Clarification",
-                    payload={"clarification": "string"},
+                    kind="ask_risk",
+                    title="Check Desk Risk",
+                    payload={"query": "desk_risk"},
+                    requires_human_confirm=False
+                ),
+                ActionItem(
+                    kind="ask_liquidity",
+                    title="Find Liquidity",
+                    payload={"query": "liquidity"},
                     requires_human_confirm=False
                 )
             ],
@@ -120,12 +151,10 @@ class CoordinatorAgent(BaseAgent):
         In phase 2, this will be an LLM-based classifier.
         """
         lowered = text.lower()
-        if "risk" in lowered:
+        if any(k in lowered for k in ["risk", "check status", "sentiment"]):
             return "risk", 1.0
-        if "fund" in lowered or "distribute" in lowered:
+        if any(k in lowered for k in ["liquidity", "fund", "distribute"]):
             return "distributor", 1.0
-        if "sentiment" in lowered:
-            return "risk", 1.0
 
         return None, 0.0
     

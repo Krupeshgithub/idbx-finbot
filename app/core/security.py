@@ -20,6 +20,14 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 
 
 
+def _truncate_password(password: str) -> str:
+    """
+    Bcrypt has a 72-byte limit. We truncate the password to ensure
+    it stays within this limit before hashing or verification.
+    """
+    return password.encode("utf-8")[:72].decode("utf-8", errors="ignore")
+
+
 def verify_password(
     plain_password: str, 
     hashed_password: str
@@ -27,7 +35,7 @@ def verify_password(
     """
     Verifies a plain password against its hashed version.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(_truncate_password(plain_password), hashed_password)
 
 
 def get_password_hash(
@@ -36,7 +44,7 @@ def get_password_hash(
     """
     Generates a bcrypt hash for the provided password.
     """
-    return pwd_context.hash(password)
+    return pwd_context.hash(_truncate_password(password))
 
 
 def create_access_token(

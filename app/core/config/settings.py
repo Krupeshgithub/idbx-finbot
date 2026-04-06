@@ -21,11 +21,15 @@ class Settings(BaseSettings):
         VERTEX_AI_MODEL_NAME: Gemini model identifier.
         FINBERT_ENDPOINT_ID: FinBERT model endpoint.
         ENABLE_KILL_SWITCH: Venue-level safety switch toggle.
+        REDIS_URL: Redis connection string.
+        REDIS_EXPIRE: Default cache expiration in seconds.
         LSEG_API_BASE_URL: Base URL for LSEG Data Library.
         LSEG_API_SNAPSHOT_PATH: Path for snapshot queries against LSEG.
         LSEG_API_KEY: Optional API key for authenticating with LSEG.
         LSEG_API_TIMEOUT: HTTP timeout when calling LSEG.
     """
+    MAX_PASSWORD_BYTES: int = 72
+
     PROJECT_NAME: str = "AIDANN-Backend"
     VERSION: str = "1.0.0"
     GOOGLE_CLOUD_PROJECT: str = "your-project-id"
@@ -35,12 +39,10 @@ class Settings(BaseSettings):
     ENABLE_KILL_SWITCH: bool = True
 
     LSEG_API_BASE_URL: str = "https://api.lseg.com/data"
-    LSEG_API_SNAPSHOT_PATH: str = "/v1/market/snapshot"
     LSEG_API_KEY: Optional[str] = None
     LSEG_API_TIMEOUT: float = 5.0
 
     LDL_BIGQUERY_DATASET: str = "ldl_v2"
-    LDL_BIGQUERY_HISTORY_TABLE: str = "market_ticks"
     LDL_BIGQUERY_TIMESTAMP_FIELD: str = "event_ts"
     LDL_BIGQUERY_BID_FIELD: str = "bid"
     LDL_BIGQUERY_ASK_FIELD: str = "ask"

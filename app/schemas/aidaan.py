@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 
 
 class ActionItem(BaseModel):
-    """Represents a suggested action returned by AIDAAN."""
+    """
+    Represents a suggested action returned by AIDAAN
+    """
     kind: str = Field(..., description="Type of action (e.g., draft_rfq, apply_filter)")
     title: str = Field(..., description="Human-readable title for the action button")
     payload: Dict[str, Any] = Field(default_factory=dict, description="Data required to execute the action")
@@ -15,13 +17,17 @@ class ActionItem(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    """Metadata about the agent/LLM that generated the response."""
+    """
+    Metadata about the agent/LLM that generated the response.
+    """
     agent: str = Field(..., description="The name of the agent (e.g., coordinator)")
     llm: str = Field("gemini-1.5-pro", description="The underlying LLM")
 
 
 class AidaanMessageRequest(BaseModel):
-    """Request payload for AIDAAN conversational messages."""
+    """
+    Request payload for AIDAAN conversational messages.
+    """
     user_id: str
     text: str
     language: str = "en"
@@ -30,7 +36,9 @@ class AidaanMessageRequest(BaseModel):
 
 
 class AidaanMessageResponse(BaseModel):
-    """Response payload for AIDAAN conversational messages."""
+    """
+    Response payload for AIDAAN conversational messages.
+    """
     reply: str
     bullets: List[str] = Field(default_factory=list)
     actions: List[ActionItem] = Field(default_factory=list)
@@ -40,14 +48,18 @@ class AidaanMessageResponse(BaseModel):
 
 
 class ToolInvokeRequest(BaseModel):
-    """Request payload for explicit tool execution."""
+    """
+    Request payload for explicit tool execution.
+    """
     user_id: str
     tool_name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolInvokeResponse(BaseModel):
-    """Response payload for tool execution."""
+    """
+    Response payload for tool execution.
+    """
     ok: bool
     result: Optional[Any] = None
     error: Optional[str] = None

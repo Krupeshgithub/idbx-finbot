@@ -1,20 +1,27 @@
 """
-AIDAAN Messaging Routes.
+AIDANN Messaging Routes.
 Handles the primary conversational flow for interbank traders.
 """
-from fastapi import APIRouter, HTTPException, Depends
-from app.schemas.aidaan import AidaanMessageRequest, AidaanMessageResponse
+from fastapi import APIRouter, HTTPException
+
 from app.services.aidaan.coordinator import coordinator_agent
+from app.schemas.aidaan import (
+    AidaanMessageRequest,
+    AidaanMessageResponse
+)
 
 
 router = APIRouter()
 
 
-@router.post("/message", response_model=AidaanMessageResponse)
+@router.post(
+    "/message",
+    response_model=AidaanMessageResponse
+)
 async def send_message(payload: AidaanMessageRequest):
     """
     Primary conversational endpoint for AIDAAN.
-    Routes intent to the Coordinator Agent and returns a structured response.
+    Routes intent to the coordinator agent and returns a structured response.
     """
     try:
         response = await coordinator_agent.handle_message(
@@ -24,4 +31,7 @@ async def send_message(payload: AidaanMessageRequest):
         )
         return response
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal AIDAAN error: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal AIDAAN error: {str(e)}"
+        )

@@ -2,14 +2,19 @@
 AIDAAN Tool Invocation Routes.
 Handles the formal execution of actions drafted by agents.
 """
-from fastapi import APIRouter, HTTPException
-from app.schemas.aidaan import ToolInvokeRequest, ToolInvokeResponse
-
+from fastapi import APIRouter
+from app.schemas.aidaan import (
+    ToolInvokeRequest,
+    ToolInvokeResponse
+)
 
 router = APIRouter()
 
 
-@router.post("/invoke", response_model=ToolInvokeResponse)
+@router.post(
+    "/invoke",
+    response_model=ToolInvokeResponse
+)
 async def invoke_tool(payload: ToolInvokeRequest):
     """
     Explicit tool invocation endpoint.
@@ -32,6 +37,8 @@ async def invoke_tool(payload: ToolInvokeRequest):
     
     return ToolInvokeResponse(
         ok=True,
-        result={"message": f"Successfully invoked tool '{payload.tool_name}'. Phase 1 result: Simulation OK."},
+        result={
+            "message": f"Successfully invoked tool '{payload.tool_name}'. Phase 1 result: Simulation OK."
+        },
         error=None
     )

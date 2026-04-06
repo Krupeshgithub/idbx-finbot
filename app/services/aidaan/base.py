@@ -4,7 +4,7 @@ Provides a standard blueprint for all institutional agents.
 """
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
-from app.schemas.aidaan import ActionItem, ModelInfo
+from app.schemas.aidaan import ModelInfo, AidaanMessageResponse
 
 
 class BaseAgent(ABC):
@@ -13,7 +13,11 @@ class BaseAgent(ABC):
     Ensures consistency in how agents process messages and interact with tools.
     """
 
-    def __init__(self, name: str, model_name: str = "gemini-1.5-pro"):
+    def __init__(
+        self, 
+        name: str, 
+        model_name: str = "gemini-1.5-pro"
+    ):
         self.name = name
         self.model_name = model_name
 
@@ -23,9 +27,9 @@ class BaseAgent(ABC):
         text: str, 
         conversation_id: str, 
         context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    ) -> AidaanMessageResponse:
         """
-        Process an incoming message and return a structured response.
+        Process an incoming message and return a structured AidaanMessageResponse.
         """
         pass
 
@@ -40,4 +44,7 @@ class BaseAgent(ABC):
         """
         Return metadata about this agent's underlying model.
         """
-        return ModelInfo(agent=self.name, llm=self.model_name)
+        return ModelInfo(
+            agent=self.name, 
+            llm=self.model_name
+        )

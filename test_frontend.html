@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIDAAN — Phase 1 Test Interface</title>
+    <style>
+        :root {
+            --bg-color: #0b0e14;
+            --card-bg: #151a21;
+            --text-color: #e0e6ed;
+            --accent-color: #4a90e2;
+            --sphere-dormant: radial-gradient(circle at 30% 30%, #4a5568, #1a202c);
+            --sphere-listening: radial-gradient(circle at 30% 30%, #4299e1, #2b6cb0);
+            --sphere-thinking: radial-gradient(circle at 30% 30%, #9f7aea, #553c9a);
+            --sphere-awakening: radial-gradient(circle at 30% 30%, #fff, #4a90e2);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #app {
+            width: 900px;
+            height: 650px;
+            background: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            border: 1px solid #2d3748;
+        }
+
+        .header {
+            padding: 20px;
+            border-bottom: 1px solid #2d3748;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 1.2rem;
+            letter-spacing: 2px;
+        }
+
+        #login-view,
+        #chat-view {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 40px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* Login Styles */
+        .login-form {
+            max-width: 300px;
+            margin: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        input {
+            background: #1a202c;
+            border: 1px solid #4a5568;
+            color: white;
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+        button {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        /* Chat Styles */
+        .chat-container {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            overflow: hidden;
+        }
+
+        .visual-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+        }
+
+        .sphere {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            background: var(--sphere-dormant);
+            transition: all 0.5s ease;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .sphere.listening {
+            background: var(--sphere-listening);
+            box-shadow: 0 0 50px rgba(66, 153, 225, 0.6);
+            animation: pulse 1.5s infinite;
+        }
+
+        .sphere.thinking {
+            background: var(--sphere-thinking);
+            box-shadow: 0 0 50px rgba(159, 122, 234, 0.6);
+            animation: rotate 2s infinite linear;
+        }
+
+        .sphere.awakening {
+            background: var(--sphere-awakening);
+            box-shadow: 0 0 70px rgba(255, 255, 255, 0.8);
+            transform: scale(1.1);
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(1.05);
+            }
+
+            100% {
+                transform: scale(1);
+            }
+        }
+
+        @keyframes rotate {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .controls {
+            padding: 20px;
+            border-top: 1px solid #2d3748;
+            display: flex;
+            gap: 10px;
+        }
+
+        #message-input {
+            flex: 1;
+        }
+
+        .log-area {
+            width: 350px;
+            background: #0f1218;
+            border-radius: 8px;
+            padding: 15px;
+            font-size: 0.85rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .msg {
+            padding: 10px;
+            border-radius: 6px;
+        }
+
+        .msg.user {
+            background: #2d3748;
+            align-self: flex-end;
+        }
+
+        .msg.bot {
+            background: #1a202c;
+            border-left: 3px solid var(--accent-color);
+        }
+
+        .msg.bot ul {
+            margin: 5px 0 0 20px;
+            padding: 0;
+        }
+
+        .status-badge {
+            font-size: 0.7rem;
+            color: #718096;
+            text-transform: uppercase;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="app">
+        <div class="header">
+            <h1>AIDAAN <span style="font-weight: 300; opacity: 0.5;">PHASE 1</span></h1>
+            <div id="user-info" class="hidden"></div>
+        </div>
+
+        <!-- LOGIN VIEW -->
+        <div id="login-view">
+            <div class="login-form">
+                <h2 style="text-align: center;">Institutional Login</h2>
+                <input type="text" id="username" placeholder="Username (trader-001)" value="trader-001">
+                <input type="password" id="password" placeholder="Password (password123)" value="password123">
+                <button id="login-btn">Log In</button>
+                <p id="login-error" style="color: #f56565; font-size: 0.8rem; text-align: center;"></p>
+            </div>
+        </div>
+
+        <!-- CHAT VIEW -->
+        <div id="chat-view" class="hidden">
+            <div class="chat-container">
+                <div class="visual-area">
+                    <div id="sphere" class="sphere"></div>
+                    <div id="sphere-status" class="status-badge">DORMANT</div>
+                </div>
+                <div class="log-area" id="chat-log">
+                    <div class="msg bot">AIDAAN initialized. How can I assist your desk today?</div>
+                </div>
+            </div>
+            <div class="controls">
+                <input type="text" id="message-input" placeholder="Type a message (e.g. 'Draft RFQ for EUR/PLN')...">
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let token = null;
+        let ws = null;
+        const BASE_URL = "http://localhost:8001/v1";
+        const WS_URL = "ws://localhost:8001/v1/ws/aidaan";
+
+        // UI Elements
+        const loginView = document.getElementById('login-view');
+        const chatView = document.getElementById('chat-view');
+        const sphere = document.getElementById('sphere');
+        const sphereStatus = document.getElementById('sphere-status');
+        const chatLog = document.getElementById('chat-log');
+        const msgInput = document.getElementById('message-input');
+
+        // --- AUTH LOGIC ---
+        document.getElementById('login-btn').onclick = async () => {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const resp = await fetch(`${BASE_URL}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (!resp.ok) throw new Error("Unauthorized");
+
+                const data = await resp.json();
+                token = data.access_token;
+
+                // Switch Views
+                loginView.classList.add('hidden');
+                chatView.classList.remove('hidden');
+                document.getElementById('user-info').innerText = username;
+                document.getElementById('user-info').classList.remove('hidden');
+
+                // Connect WebSocket
+                connectWebSocket();
+
+            } catch (err) {
+                document.getElementById('login-error').innerText = "Access Denied: " + err.message;
+            }
+        };
+
+        // --- WEBSOCKET LOGIC ---
+        function connectWebSocket() {
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => console.log("AIDAAN Connected");
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                // Handle Visual States
+                if (data.type === "state") {
+                    updateSphere(data.state);
+                }
+
+                // Handle Chat Reply
+                if (data.type === "chat_reply") {
+                    addBotMessage(data.payload);
+                }
+            };
+
+            ws.onclose = () => {
+                sphereStatus.innerText = "OFFLINE";
+                sphere.className = "sphere";
+            };
+        }
+
+        function updateSphere(state) {
+            sphereStatus.innerText = state;
+            sphere.className = "sphere " + state.toLowerCase();
+        }
+
+        function addBotMessage(payload) {
+            const div = document.createElement('div');
+            div.className = "msg bot";
+
+            let html = `<div>${payload.reply}</div>`;
+            if (payload.bullets && payload.bullets.length > 0) {
+                html += `<ul>${payload.bullets.map(b => `<li>${b}</li>`).join('')}</ul>`;
+            }
+            if (payload.actions && payload.actions.length > 0) {
+                html += `<div style="margin-top:10px;">${payload.actions.map(a => 
+                    `<button class="action-btn" data-payload='${JSON.stringify(a.payload)}' data-title="${a.title}" style="padding:4px 8px; font-size:0.7rem; margin-right:5px; background:#2d3748; color:white; border:1px solid #4a5568; cursor:pointer; border-radius:4px;">${a.title}</button>`
+                ).join('')}</div>`;
+            }
+
+            div.innerHTML = html;
+            chatLog.appendChild(div);
+
+            // Add click listeners to NEW buttons
+            div.querySelectorAll('.action-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const title = btn.getAttribute('data-title');
+                    const payloadStr = btn.getAttribute('data-payload');
+                    
+                    addUserMessage(title);
+                    ws.send(JSON.stringify({ 
+                        user_id: "trader-001", 
+                        text: title,
+                        context: JSON.parse(payloadStr)
+                    }));
+                };
+            });
+
+            chatLog.scrollTop = chatLog.scrollHeight;
+        }
+
+        function addUserMessage(text) {
+            const div = document.createElement('div');
+            div.className = "msg user";
+            div.innerText = text;
+            chatLog.appendChild(div);
+            chatLog.scrollTop = chatLog.scrollHeight;
+        }
+
+        // --- SEND LOGIC ---
+        document.getElementById('send-btn').onclick = () => {
+            const text = msgInput.value;
+            if (!text || !ws) return;
+
+            addUserMessage(text);
+            ws.send(JSON.stringify({
+                user_id: "trader-001",
+                text: text
+            }));
+            msgInput.value = "";
+        };
+
+        msgInput.onkeydown = (e) => { if (e.key === 'Enter') document.getElementById('send-btn').click(); };
+
+    </script>
+</body>
+
+</html>

@@ -7,7 +7,6 @@ import json
 import logging
 
 from app.services.aidaan.coordinator import coordinator_agent
-from app.schemas.aidaan import AidaanMessageRequest
 from fastapi import (
     APIRouter, 
     WebSocket, 
@@ -31,9 +30,6 @@ async def aidaan_websocket(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-
-            print("Received WebSocket message:")
-            print(message)
 
             # Safety wrap for state signals
             try:

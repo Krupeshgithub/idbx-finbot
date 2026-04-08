@@ -4,7 +4,11 @@ Provides a standard blueprint for all institutional agents.
 """
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
+
+import google.generativeai as genai
+
 from app.schemas.aidaan import ModelInfo, AidaanMessageResponse
+from app.core.config.settings import settings
 
 
 class BaseAgent(ABC):
@@ -16,10 +20,20 @@ class BaseAgent(ABC):
     def __init__(
         self, 
         name: str, 
-        model_name: str = "gemini-1.5-pro"
+        model_name: str = settings.VERTEX_AI_MODEL_NAME
     ):
         self.name = name
         self.model_name = model_name
+
+        genai.configure(api_key=settings.GOOGLE_API_KEY)
+
+        self.model = genai.GenerativeModel(
+            model_name=model_name,
+            generation_config={
+                "response_mime_type": "application/json",
+                "temperature": 0.2
+            }
+        )
 
     @abstractmethod
     async def handle_message(

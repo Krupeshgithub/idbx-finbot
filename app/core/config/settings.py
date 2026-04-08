@@ -18,6 +18,8 @@ class Settings(BaseSettings):
         VERSION: Current version.
         GOOGLE_CLOUD_PROJECT: GCP project ID.
         GOOGLE_CLOUD_LOCATION: GCP region.
+        GOOGLE_API_KEY: API key for Google services.
+        ALPHA_VANTAGE_API_KEY: API key for Alpha Vantage.
         VERTEX_AI_MODEL_NAME: Gemini model identifier.
         FINBERT_ENDPOINT_ID: FinBERT model endpoint.
         ENABLE_KILL_SWITCH: Venue-level safety switch toggle.
@@ -30,14 +32,17 @@ class Settings(BaseSettings):
     """
     MAX_PASSWORD_BYTES: int = 72
 
+    GOOGLE_API_KEY: str = "AIzaSyAnNgB7Ir2i9DSYV05TNfM8ktxBgWeojYc"
+    ALPHA_VANTAGE_API_KEY: str = "PJBIMYS7Q8AYB7NJ"
+
     PROJECT_NAME: str = "AIDANN-Backend"
     VERSION: str = "1.0.0"
     GOOGLE_CLOUD_PROJECT: str = "your-project-id"
     GOOGLE_CLOUD_LOCATION: str = "us-central1"
-    VERTEX_AI_MODEL_NAME: str = "gemini-1.5-pro-002"
+    VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
     FINBERT_ENDPOINT_ID: Optional[str] = None
     ENABLE_KILL_SWITCH: bool = True
-    
+
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_EXPIRE: int = 14400  # 4 hours
 

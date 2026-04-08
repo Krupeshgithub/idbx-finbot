@@ -7,6 +7,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from app.services.aidaan.base import BaseAgent
+from app.core.prompts import Prompts
 from app.services.market.alphavantage_client import alphavantage_client
 from app.services.market.gemini_client import gemini_client
 from app.schemas.aidaan import ActionItem, AidaanMessageResponse
@@ -40,12 +41,9 @@ class MarketAgent(BaseAgent):
         logger.info(f"[MarketAgent] type={data_type}, symbols={symbols}, text='{text}'")
 
         if data_type == "unknown" or not symbols:
+            prompt = Prompts.FALLBACK_UNKNOWN_MARKET
             return AidaanMessageResponse(
-                reply=(
-                    "I couldn't identify a specific stock or market data request. "
-                    "Try asking like: 'What is Apple's current price?' or "
-                    "'Show me Nvidia's performance this week.'"
-                ),
+                reply=prompt,
                 bullets=[
                     "Supported: current quotes, daily OHLCV, intraday OHLCV",
                     "You can use company names or ticker symbols",

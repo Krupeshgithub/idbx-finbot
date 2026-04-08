@@ -1,37 +1,35 @@
 """
-Coordinator Agent Implementation for AIDAAN
-The "Brain" of the operation, now with A2A and Guardrails
+Coordinator Agent for AIDAAN
+==============================
+The "Brain" — classifies intent and delegates to specialized agents.
+
+CHANGES FROM ORIGINAL:
+- Intent classifier prompt moved to `Prompts.INTENT_CLASSIFIER`.
+- LLM call uses `llm_client.generate_json_sync()` instead of raw SDK.
+- `_classifier_executor` removed — handled inside llm_client.
+- Static reply strings replaced with `Prompts.*` constants.
 """
-import re
-import json
 import logging
-from typing import Any, Dict, Tuple, Optional, List
+from typing import Any, Dict, Optional, Tuple, List
 from uuid import uuid4
-from concurrent.futures import ThreadPoolExecutor
 
 from app.services.aidaan.base import BaseAgent
 from app.services.aidaan.registry import registry
 from app.services.aidaan.session_manager import session_manager
 from app.core.guardrails import guardrails
-from app.schemas.aidaan import (
-    ActionItem,
-    AidaanMessageResponse
-)
-
+from app.core.prompts import Prompts
+from app.schemas.aidaan import ActionItem, AidaanMessageResponse
 from app.core.config.settings import settings
 from app.services.aidaan.risk_agent import risk_agent
 from app.services.aidaan.market_agent import market_agent
 from app.services.aidaan.distributor_agent import distributor_agent
 
-
-# Registry configuration
+# Register all agents at startup
 registry.register("risk", risk_agent)
 registry.register("distributor", distributor_agent)
 registry.register("market", market_agent)
 
-
 logger = logging.getLogger(__name__)
-_classifier_executor = ThreadPoolExecutor(max_workers=2)
 
 
 class CoordinatorAgent(BaseAgent):
@@ -52,23 +50,22 @@ class CoordinatorAgent(BaseAgent):
         context: Optional[Dict[str, Any]] = None
     ) -> AidaanMessageResponse:
         """
-        Process user intent and return a structured response
-        with A2A and Guardrails logic.
+        Main entry point: apply guardrails → classify intent → delegate.
         """
         conv_id = conversation_id or f"conv-{uuid4().hex[:8]}"
+        logger.info(f"[Coordinator] conv_id={conv_id} | text={text!r}")
 
-        logger.info(f"[DEBUG] Incoming text: {text}")
-
-        # Load existing context/session state
+        # Load + merge session context
         session_context = session_manager.get_context(conv_id)
         if context:
             session_context.update(context)
             session_manager.save_context(conv_id, session_context)
-        
-        # Action Callback Handler
+
+        # --- Action Callback: user clicked a button ---
         action_kind = session_context.get("kind")
+
         if action_kind == "draft_rfq":
-             return AidaanMessageResponse(
+            return AidaanMessageResponse(
                 reply="RFQ Drafted: EUR/PLN Swap 3M @ 50M EUR. Proceed to distribution?",
                 bullets=["Side: BUY", "Notional: 50,000,000", "Venue: Institutional Hybrid"],
                 actions=[
@@ -82,30 +79,29 @@ class CoordinatorAgent(BaseAgent):
                 conversation_id=conv_id,
                 model=self.get_model_info()
             )
-        
+
         if action_kind == "confirm_rfq":
-             return AidaanMessageResponse(
+            return AidaanMessageResponse(
                 reply="Distribution active. RFQ is now being priced by LSEG and internal nodes.",
                 bullets=["Status: LIVE", "RFQ ID: RFQ-9912", "Liquidity: 3 Matches"],
                 actions=[],
                 conversation_id=conv_id,
                 model=self.get_model_info()
             )
-        
+
+        # --- Guardrails check ---
         is_advisory, reason = guardrails.is_advisory(text)
         if is_advisory:
             return AidaanMessageResponse(
-                reply=f"I cannot provide financial advice. {guardrails.get_compliance_notice()}",
+                reply=f"I cannot provide financial advice. {Prompts.COMPLIANCE_NOTICE}",
                 bullets=[f"Compliance Block: {reason}"],
                 actions=[],
                 conversation_id=conv_id,
                 model=self.get_model_info()
             )
 
-        # Intent Classification
+        # --- Intent classification → agent delegation ---
         agent_id, _ = self._classify_intent(text)
-
-        # Delegate to Specialized Agent
         if agent_id:
             target_agent = registry.get_agent(agent_id)
             if target_agent:
@@ -114,10 +110,9 @@ class CoordinatorAgent(BaseAgent):
                     conversation_id=conv_id,
                     context=session_context
                 )
-            
-        # Phase 1 Static Handlers
-        lowered_text = text.lower()
-        if "rfq" in lowered_text:
+
+        # --- Static Phase 1 fallback handlers ---
+        if "rfq" in text.lower():
             return AidaanMessageResponse(
                 reply="I can help draft an RFQ. What are the details of the request?",
                 bullets=["Standard 50M threshold applied"],
@@ -134,8 +129,8 @@ class CoordinatorAgent(BaseAgent):
             )
 
         return AidaanMessageResponse(
-            reply="AIDAAN is standing by. You can ask about Risk, Sentiment, or Liquidity Distribution.",
-            bullets=["Phase 1 modularity active", "Gemini 1.5 Pro: Routing Only"],
+            reply=Prompts.FALLBACK_GENERAL_STANDBY,
+            bullets=["Phase 1 modularity active", f"Model: {settings.VERTEX_AI_MODEL_NAME}"],
             actions=[
                 ActionItem(
                     kind="ask_risk",
@@ -156,82 +151,46 @@ class CoordinatorAgent(BaseAgent):
 
     def _classify_intent(self, text: str) -> Tuple[Optional[str], float]:
         """
-        Gemini-powered intent classifier.
-        Decides: market | risk | distributor | general
+        Gemini-powered intent classification.
+        Uses Prompts.INTENT_CLASSIFIER — edit the prompt there, not here.
+
+        Returns:
+            (agent_id, confidence) e.g. ("market", 0.9) or (None, 0.0)
         """
-        prompt = f"""You are an intent classifier for an institutional trading assistant called AIDAAN.
+        prompt = Prompts.INTENT_CLASSIFIER.format(text=text)
 
-            Classify this trader message into exactly ONE category.
-
-            Message: "{text}"
-
-            Categories:
-            1. "market"      - Anything about stock prices, quotes, company performance, historical data,
-                            tickers, company names (Apple, HDFC, Nvidia etc), indices, charts, OHLCV,
-                            earnings, market cap, volume, intraday/daily/weekly data.
-                            Examples: "NVDA", "Apple price", "How is Tesla doing?", "HDFC Bank",
-                                        "Show me Google's chart", "What was Microsoft last week?"
-
-            2. "risk"        - Desk risk checks, pre-trade risk, sentiment analysis, volatility assessment,
-                            limit checks, compliance checks.
-                            Examples: "Check my desk risk", "What's market sentiment?",
-                                        "Am I within limits?", "Check status"
-
-            3. "distributor" - Liquidity discovery, RFQ distribution, trade funding, matching,
-                            finding counterparties.
-                            Examples: "Find liquidity", "Distribute this RFQ", "Fund 5bn overnight",
-                                        "Who can price EUR/PLN?"
-
-            4. "general"     - Greetings, help requests, unclear messages, non-market questions.
-                            Examples: "Hello", "What can you do?", "Help me"
-
-            Return ONLY raw JSON. No markdown. No explanation.
-            Format: {{"intent": "market|risk|distributor|general", "confidence": 0.0-1.0, "reason": "one line why"}}
-
-            Classify: "{text}"
-        """
         try:
-            # run_in_executor returns a coroutine -- run it synchronously here
-            future = _classifier_executor.submit(
-                self.model.generate_content, 
-                prompt
+            parsed = self.llm.generate_json_sync(prompt, timeout=8)
+
+            if "error" in parsed:
+                logger.warning(f"[Coordinator._classify_intent] LLM error: {parsed['error']}")
+                return self._keyword_fallback(text)
+
+            intent = parsed.get("intent", "general")
+            confidence = float(parsed.get("confidence", 0.8))
+            reason = parsed.get("reason", "")
+            logger.info(
+                f"[Coordinator._classify_intent] intent={intent} "
+                f"confidence={confidence:.2f} reason={reason!r}"
             )
-            result_raw = future.result(timeout=8)
-            raw = result_raw.text.strip()
 
-            # Clean JSON
-            raw = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
-            match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group(0))
-                intent     = parsed.get("intent", "general")
-                confidence = float(parsed.get("confidence", 0.8))
-                reason     = parsed.get("reason", "")
-                logger.info(f"[Classifier] intent={intent} conf={confidence} reason={reason}")
-
-                if intent == "market":
-                    return "market", confidence
-                elif intent == "risk":
-                    return "risk", confidence
-                elif intent == "distributor":
-                    return "distributor", confidence
-                else:
-                    return None, 0.0
+            if intent in ("market", "risk", "distributor"):
+                return intent, confidence
+            return None, 0.0
 
         except Exception as e:
-            logger.error(f"[Classifier] Gemini failed: {type(e).__name__}: {e}. Falling back to keywords.")
+            logger.error(
+                f"[Coordinator._classify_intent] Unexpected error: {type(e).__name__}: {e}. "
+                "Falling back to keywords."
+            )
             return self._keyword_fallback(text)
-
-        return None, 0.0
 
     def _keyword_fallback(self, text: str) -> Tuple[Optional[str], float]:
         """
-        Hard keyword fallback — only runs if Gemini classifier fails.
-        Much tighter than before to avoid false positives.
+        Hard keyword fallback — only used if Gemini classifier fails.
         """
         lowered = text.lower()
 
-        # Only very specific financial terms — no generic words like "up/down/market"
         market_triggers = [
             "price", "quote", "ohlcv", "intraday", "earnings", "market cap",
             "52-week", "stock", "ticker", "aapl", "msft", "tsla", "amzn",
@@ -257,5 +216,6 @@ class CoordinatorAgent(BaseAgent):
             "compliance_guardrails",
             "rfq_drafting"
         ]
+
 
 coordinator_agent = CoordinatorAgent()

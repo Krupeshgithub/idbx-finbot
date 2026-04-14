@@ -53,11 +53,14 @@ class Prompts:
                     Examples: "Find liquidity", "Distribute this RFQ", "Fund 5bn overnight",
                                 "Who can price EUR/PLN?"
 
-    4. "general"     - Greetings, help requests, unclear messages, non-market questions.
-                    Examples: "Hello", "What can you do?", "Help me"
+    4. "greeting"    - Standard hellos, Good morning/evening, welcomes, or when the user introduces themselves.
+                    Examples: "Hello AIDAAN", "Good morning", "Hi there"
+
+    5. "general"     - Help requests, unclear messages, non-market questions.
+                    Examples: "What can you do?", "Help me"
 
     Return ONLY raw JSON. No markdown. No explanation.
-    Format: {{"intent": "market|risk|distributor|general", "confidence": 0.0-1.0, "reason": "one line why"}}
+    Format: {{"intent": "market|risk|distributor|greeting|general", "confidence": 0.0-1.0, "reason": "one line why"}}
 
     Classify: "{text}"
     """
@@ -146,7 +149,35 @@ class Prompts:
     )
 
     # =========================================================================
-    # 5. STATIC / FALLBACK RESPONSES (no LLM needed)
+    # 5. GREETING AGENT — Personalized Welcomes
+    # =========================================================================
+
+    GREETING_SYSTEM = (
+        "You are AIDAAN's Greeting Specialist. Your role is to provide personal, "
+        "professional, and warm welcomes to institutional traders. "
+        "Always use the provided context (username, time of day) to craft a greeting."
+    )
+
+    GREETING_TEMPLATE = """Generate a professional institutional greeting for the user.
+
+        User: {username}
+        Time of Day: {time_of_day}
+        Timezone: {timezone}
+
+        The greeting should:
+        1. Say "{time_of_day}, {username}!" (e.g., Good morning, Alex!)
+        2. Ask "How can I help you with the desk today?" or a similar professional variation.
+        3. Be brief and efficient.
+
+        Return JSON:
+        {{
+        "reply": "The full greeting string",
+        "bullets": ["A small helpful tip or current system status"]
+        }}
+    """
+
+    # =========================================================================
+    # 6. STATIC / FALLBACK RESPONSES (no LLM needed)
     # =========================================================================
 
     FALLBACK_UNKNOWN_MARKET = (

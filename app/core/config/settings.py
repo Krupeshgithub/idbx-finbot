@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     """
     MAX_PASSWORD_BYTES: int = 72
 
-    GOOGLE_API_KEY: str = "AIzaSyAnNgB7Ir2i9DSYV05TNfM8ktxBgWeojYc"
+    GOOGLE_API_KEY: str = ""
     ALPHA_VANTAGE_API_KEY: str = "PJBIMYS7Q8AYB7NJ"
 
     PROJECT_NAME: str = "AIDANN-Backend"
@@ -47,8 +47,13 @@ class Settings(BaseSettings):
     REDIS_EXPIRE: int = 14400  # 4 hours
 
     LSEG_API_BASE_URL: str = "https://api.lseg.com/data"
+    LSEG_API_SNAPSHOT_PATH: str = "snapshot"
     LSEG_API_KEY: Optional[str] = None
     LSEG_API_TIMEOUT: float = 5.0
+
+    # MCP Configurations
+    MCP_SERVER_COMMAND: str = "python3"
+    MCP_SERVER_ARGS: str = "app/services/aidaan/mcp/server.py"
 
     LDL_BIGQUERY_DATASET: str = "ldl_v2"
     LDL_BIGQUERY_TIMESTAMP_FIELD: str = "event_ts"

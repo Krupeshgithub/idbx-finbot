@@ -6,7 +6,6 @@ from fastapi import (APIRouter, HTTPException, Depends, status)
 
 from app.schemas.auth import Token, LoginRequest, UserContext
 from app.api.deps import get_current_user
-from app.core.config.settings import settings
 from app.core.security import (
     create_access_token,
     verify_password,

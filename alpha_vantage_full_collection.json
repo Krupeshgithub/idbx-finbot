@@ -1,0 +1,53 @@
+{
+  "info": {
+    "name": "Alpha Vantage FULL API Collection (Expanded)",
+    "_postman_id": "expanded-alpha-vantage",
+    "description": "Fully expanded Alpha Vantage endpoints collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "apikey", "value": "PJBIMYS7Q8AYB7NJ" },
+    { "key": "symbol", "value": "AAPL" }
+  ],
+  "item": [
+
+    {
+      "name": "TIME SERIES",
+      "item": [
+        { "name": "Intraday", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol={{symbol}}&interval=1min&apikey={{apikey}}" }},
+        { "name": "Daily", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={{symbol}}&apikey={{apikey}}" }},
+        { "name": "Weekly", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=TIME_SERIES_WEEKLY&symbol={{symbol}}&apikey={{apikey}}" }},
+        { "name": "Monthly", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=TIME_SERIES_MONTHLY&symbol={{symbol}}&apikey={{apikey}}" }}
+      ]
+    },
+
+    {
+      "name": "TECHNICAL INDICATORS",
+      "item": [
+        { "name": "SMA", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=SMA&symbol={{symbol}}&interval=daily&time_period=20&series_type=close&apikey={{apikey}}" }},
+        { "name": "EMA", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=EMA&symbol={{symbol}}&interval=daily&time_period=20&series_type=close&apikey={{apikey}}" }},
+        { "name": "RSI", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=RSI&symbol={{symbol}}&interval=daily&time_period=14&series_type=close&apikey={{apikey}}" }},
+        { "name": "MACD", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=MACD&symbol={{symbol}}&interval=daily&series_type=close&apikey={{apikey}}" }},
+        { "name": "BBANDS", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=BBANDS&symbol={{symbol}}&interval=daily&time_period=20&series_type=close&apikey={{apikey}}" }}
+      ]
+    },
+
+    {
+      "name": "FUNDAMENTALS",
+      "item": [
+        { "name": "OVERVIEW", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=OVERVIEW&symbol={{symbol}}&apikey={{apikey}}" }},
+        { "name": "INCOME_STATEMENT", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol={{symbol}}&apikey={{apikey}}" }},
+        { "name": "BALANCE_SHEET", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=BALANCE_SHEET&symbol={{symbol}}&apikey={{apikey}}" }},
+        { "name": "CASH_FLOW", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=CASH_FLOW&symbol={{symbol}}&apikey={{apikey}}" }}
+      ]
+    },
+
+    {
+      "name": "NEWS",
+      "item": [
+        { "name": "NEWS_SENTIMENT", "request": { "method": "GET", "url": "https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={{symbol}}&apikey={{apikey}}" }}
+      ]
+    }
+
+  ]
+}

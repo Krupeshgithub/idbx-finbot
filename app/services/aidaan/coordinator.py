@@ -23,11 +23,13 @@ from app.core.config.settings import settings
 from app.services.aidaan.risk_agent import risk_agent
 from app.services.aidaan.market_agent import market_agent
 from app.services.aidaan.distributor_agent import distributor_agent
+from app.services.aidaan.greeting_agent import greeting_agent
 
 # Register all agents at startup
 registry.register("risk", risk_agent)
 registry.register("distributor", distributor_agent)
 registry.register("market", market_agent)
+registry.register("greeting", greeting_agent)
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +176,7 @@ class CoordinatorAgent(BaseAgent):
                 f"confidence={confidence:.2f} reason={reason!r}"
             )
 
-            if intent in ("market", "risk", "distributor"):
+            if intent in ("market", "risk", "distributor", "greeting"):
                 return intent, confidence
             return None, 0.0
 

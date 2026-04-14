@@ -30,6 +30,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
 import google.generativeai as genai
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from app.core.config.settings import settings
 
@@ -49,11 +51,13 @@ class LLMClient:
         genai.configure(api_key=settings.GOOGLE_API_KEY)
         self._default_model_name = settings.VERTEX_AI_MODEL_NAME
         self._model_cache: Dict[str, genai.GenerativeModel] = {}
+        self._mcp_tools = []
+        self._mcp_client = None
 
         logger.info(f"[LLMClient] Initialized. Default model: {self._default_model_name}")
 
-        # Startup smoke test
-        self._smoke_test()
+        # Startup smoke test - Disabled to save quota
+        # self._smoke_test()
 
     # ------------------------------------------------------------------
     def _get_model(
@@ -87,7 +91,55 @@ class LLMClient:
         except Exception as e:
             logger.error(f"[LLMClient] Smoke test FAILED: {e}")
 
-    # ------------------------------------------------------------------
+    async def _ensure_mcp_tools(self):
+        """
+        Connects to the MCP server, fetches tools, and caches them.
+        """
+        if self._mcp_tools:
+            return self._mcp_tools
+
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+
+            server_params = StdioServerParameters(
+                command=settings.MCP_SERVER_COMMAND,
+                args=[settings.MCP_SERVER_ARGS],
+            )
+
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools_resp = await session.list_tools()
+                    self._mcp_tools = tools_resp.tools
+                    logger.info(f"[LLMClient] Discovered {len(self._mcp_tools)} tools via MCP.")
+                    return self._mcp_tools
+        except Exception as e:
+            logger.error(f"[LLMClient] MCP Tool Discovery Failed: {e}")
+            return []
+
+    async def _execute_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+        """
+        Executes a specific tool via the MCP server.
+        """
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+
+            server_params = StdioServerParameters(
+                command=settings.MCP_SERVER_COMMAND,
+                args=[settings.MCP_SERVER_ARGS],
+            )
+
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, arguments)
+                    return result.content
+        except Exception as e:
+            logger.error(f"[LLMClient] MCP Tool Execution Failed ({name}): {e}")
+            return f"Error executing tool: {str(e)}"
+
     async def generate_json(
         self,
         prompt: str,
@@ -95,66 +147,107 @@ class LLMClient:
         retries: int = 2,
     ) -> Dict[str, Any]:
         """
-        Send a prompt and parse the response as JSON.
-
-        Args:
-            prompt:         The full prompt string (use Prompts.XYZ.format(...))
-            model_override: Optional model name to use instead of the default
-            retries:        How many times to retry on failure
-
-        Returns:
-            Parsed dict, or {"error": "..."} on failure
-
-        Debug tip:
-            Every call logs prompt hash + latency. Set LOG_LEVEL=DEBUG to see full prompts.
+        Finalized generation with automated MCP tool calling.
         """
-        model = self._get_model(model_override)
+        model_name = model_override or self._default_model_name
+        mcp_tools = await self._ensure_mcp_tools()
+        
+        # 1. Map MCP tools to Gemini FunctionDeclarations
+        gemini_tools = []
+        if mcp_tools:
+            def clean_schema(s):
+                if not isinstance(s, dict):
+                    return s
+                # Gemini prohibited fields
+                forbidden = ["title", "additionalProperties", "default", "examples", "$schema"]
+                for field in forbidden:
+                    if field in s:
+                        del s[field]
+                if "properties" in s:
+                    for k, v in s["properties"].items():
+                        s["properties"][k] = clean_schema(v)
+                return s
+
+            declarations = []
+            for tool in mcp_tools:
+                params = clean_schema(tool.inputSchema.copy())
+                
+                declarations.append(genai.types.FunctionDeclaration(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=params
+                ))
+            gemini_tools = [genai.types.Tool(function_declarations=declarations)]
+
+        # 2. Get/Configure model with tools
+        # We create a new model instance if tools are provided to ensure they are bound
+        if gemini_tools:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config={"response_mime_type": "application/json", "temperature": 0.2},
+                tools=gemini_tools
+            )
+        else:
+            model = self._get_model(model_name)
+        
         loop = asyncio.get_event_loop()
 
         for attempt in range(retries):
             start = time.monotonic()
             try:
+                # Use a chat session to handle multi-turn tool calling
+                chat = model.start_chat(history=[], enable_automatic_function_calling=False)
+                
+                # First request
                 response = await loop.run_in_executor(
                     _executor,
-                    lambda: model.generate_content(prompt)
+                    lambda: chat.send_message(prompt)
                 )
-                raw = response.text.strip()
 
-                # Strip markdown fences if present
+                # 3. Tool Execution Loop
+                # We handle one level of tool calling for now (standard for Phase 2)
+                if response.candidates and response.candidates[0].content.parts:
+                    content_parts = response.candidates[0].content.parts
+                    if any(p.function_call for p in content_parts):
+                        tool_responses = []
+                        for part in content_parts:
+                            if part.function_call:
+                                call = part.function_call
+                                logger.info(f"[LLMClient] Model requested tool: {call.name}")
+                                
+                                # Execute via MCP
+                                tool_result = await self._execute_mcp_tool(call.name, dict(call.args))
+                                
+                                # Prepare function response
+                                tool_responses.append(genai.types.Part(
+                                    function_response=genai.types.FunctionResponse(
+                                        name=call.name,
+                                        response={"result": tool_result}
+                                    )
+                                ))
+                        
+                        # Feed back to model
+                        response = await loop.run_in_executor(
+                            _executor,
+                            lambda: chat.send_message(tool_responses)
+                        )
+
+                # 4. Final Parse
+                raw = response.text.strip()
                 clean = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
                 match = re.search(r"\{.*\}", clean, re.DOTALL)
-                if match:
-                    parsed = json.loads(match.group(0))
-                else:
-                    parsed = json.loads(clean)
+                parsed = json.loads(match.group(0) if match else clean)
 
                 latency_ms = int((time.monotonic() - start) * 1000)
-                logger.debug(
-                    f"[LLMClient] generate_json OK | model={model_override or self._default_model_name} "
-                    f"| latency={latency_ms}ms | prompt_preview={prompt[:80]!r}"
-                )
+                logger.debug(f"[LLMClient] generate_json (with tools) OK | latency={latency_ms}ms")
                 return parsed
 
-            except json.JSONDecodeError as e:
-                logger.warning(
-                    f"[LLMClient] JSON parse error (attempt {attempt + 1}/{retries}): {e} "
-                    f"| raw={raw[:200]!r}"
-                )
             except Exception as e:
-                logger.warning(
-                    f"[LLMClient] API error (attempt {attempt + 1}/{retries}): "
-                    f"{type(e).__name__}: {e}"
-                )
-
-            if attempt < retries - 1:
-                await asyncio.sleep(0.5 * (attempt + 1))  # simple backoff
-
-        logger.error(
-            f"[LLMClient] All {retries} attempts failed. "
-            f"Prompt preview: {prompt[:200]!r}"
-        )
-        return {"error": f"LLM call failed after {retries} attempts"}
-
+                logger.warning(f"[LLMClient] Tool Loop Error (attempt {attempt+1}/{retries}): {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+        
+        return {"error": "LLM call with tools failed"}
     async def generate_text(
         self,
         prompt: str,

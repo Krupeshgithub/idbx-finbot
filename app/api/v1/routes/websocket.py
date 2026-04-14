@@ -51,11 +51,16 @@ async def aidaan_websocket(websocket: WebSocket):
 
             # Intent Processing (Unified with REST)
             user_text = message.get("text", "")
+            msg_type = message.get("type", "chat")
             conv_id = message.get("conversation_id")
             user_id = message.get(
                 "user_id",
                 "anonymous-trader"
             )
+
+            # If it's an 'init' message, we force a greeting if no text is provided
+            if msg_type == "init" and not user_text:
+                user_text = "Hello AIDAAN" # Force classification as greeting
 
             if user_text:
                 try:

@@ -1,4 +1,4 @@
-# AIDAAN — AI-Powered Interbank Assistant (Phase 1)
+# AIDAAN — AI-Powered Interbank Assistant
 
 **AIDAAN** is an intelligent, always-present conversational assistant designed for the **IDBX Live Trading Platform**. It functions as a "one-piece phenomenon" on the trader's desk, providing real-time market intelligence, RFQ drafting, and desk-to-desk collaboration via institutional-grade protocols.
 
@@ -107,8 +107,3 @@ To see AIDAAN in action with the **Glass Sphere** visual states, we have include
     - *"Draft an RFQ for 50mm EUR/PLN"*
     - *"How can I fund 5bn overnight?"*
     - *"Should I buy EUR/USD?"* (Tests compliance guardrails)
-
----
-
-## Support
-For integration queries, refer to the `walkthrough.md` or contact the **Acquaint SoftTech** lead developer.

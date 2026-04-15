@@ -21,7 +21,7 @@ class ModelInfo(BaseModel):
     Metadata about the agent/LLM that generated the response.
     """
     agent: str = Field(..., description="The name of the agent (e.g., coordinator)")
-    llm: str = Field("gemini-1.5-pro", description="The underlying LLM")
+    llm: str = Field("gemini-2.5-flash", description="The underlying LLM")
 
 
 class AidaanMessageRequest(BaseModel):

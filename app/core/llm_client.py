@@ -1,106 +1,181 @@
 """
-AIDAAN Generic LLM Client
-==========================
-One place to configure, call, and debug ALL Gemini interactions.
+AIDAAN Vertex AI LLM Client
+===========================
+One place to configure, call, and debug all Vertex AI interactions.
 
 HOW TO USE:
     from app.core.llm_client import llm_client
 
-    # Simple JSON call (returns parsed dict)
     result = await llm_client.generate_json(prompt)
-
-    # Raw text call
     text = await llm_client.generate_text(prompt)
 
-HOW TO DEBUG:
-    - Set LOG_LEVEL=DEBUG in your .env to see every prompt + raw response
-    - Every call logs: [LLM] model | tokens_approx | latency_ms
-    - Failures are logged with full prompt (truncated to 500 chars)
-
 HOW TO SWAP MODELS:
-    - Change VERTEX_AI_MODEL_NAME in settings.py — affects all agents instantly
-    - Or pass model_override="gemini-1.0-pro" to generate_json() for one-off calls
+    - Change VERTEX_AI_MODEL_NAME in settings.py for default flows
+    - Change VERTEX_AI_REASONING_MODEL_NAME for heavier analytical flows
+    - Or pass model_override="gemini-2.5-pro" for one-off calls
 """
+import asyncio
+import hashlib
 import json
 import logging
-import asyncio
+import os
 import re
 import time
-import hashlib
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-import google.generativeai as genai
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from google import genai
+from google.genai import types
 
 from app.core.cache import cache
 from app.core.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# One shared thread pool for all blocking Gemini SDK calls
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm_worker")
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vertex_llm_worker")
 
 
 class LLMClient:
     """
-    Generic async wrapper around the Gemini SDK.
+    Generic async wrapper around the Google Gen AI SDK on Vertex AI.
     Single instance used by all agents via dependency injection or singleton.
     """
 
-    def __init__(self):
-        genai.configure(api_key=settings.GOOGLE_API_KEY)
+    def __init__(self) -> None:
         self._default_model_name = settings.VERTEX_AI_MODEL_NAME
-        self._model_cache: Dict[str, genai.GenerativeModel] = {}
+        self._reasoning_model_name = settings.VERTEX_AI_REASONING_MODEL_NAME
         self._mcp_tools = []
-        self._mcp_client = None
+        self._client: Optional[genai.Client] = None
+        self._vertex_disabled_reason: Optional[str] = None
+        self._runtime_mode: str = "uninitialized"
+        self._temp_credential_file: Optional[Path] = None
         self._usage_stats = {
             "generate_json": 0,
             "generate_json_sync": 0,
             "generate_text": 0,
         }
 
-        logger.info(f"[LLMClient] Initialized. Default model: {self._default_model_name}")
+        self._configure_vertex_auth()
+        self._ensure_client()
 
-        # Startup smoke test - Disabled to save quota
-        # self._smoke_test()
+    def _configure_vertex_auth(self) -> None:
+        """
+        Configure service-account based auth when an explicit path is supplied.
+        Otherwise Vertex AI falls back to Application Default Credentials.
+        """
+        if settings.VERTEX_AI_SERVICE_ACCOUNT_JSON:
+            try:
+                credential_dir = Path(tempfile.gettempdir())
+                credential_dir.mkdir(parents=True, exist_ok=True)
+                credential_path = credential_dir / "aidaan-vertex-service-account.json"
+                credential_path.write_text(settings.VERTEX_AI_SERVICE_ACCOUNT_JSON, encoding="utf-8")
+                self._temp_credential_file = credential_path
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credential_path)
+                logger.info(
+                    "[LLMClient] Using service account credentials from VERTEX_AI_SERVICE_ACCOUNT_JSON"
+                )
+                return
+            except Exception as exc:
+                logger.error("[LLMClient] Failed to persist VERTEX_AI_SERVICE_ACCOUNT_JSON: %s", exc)
 
-    # ------------------------------------------------------------------
-    def _get_model(
-        self,
-        model_name: Optional[str] = None
-    ) -> genai.GenerativeModel:
-        """
-        Returns a cached GenerativeModel instance.
-        Creates one if it doesn't exist yet.
-        """
-        name = model_name or self._default_model_name
-        if name not in self._model_cache:
-            self._model_cache[name] = genai.GenerativeModel(
-                model_name=name,
-                generation_config={
-                    "response_mime_type": "application/json",
-                    "temperature": 0.2,
-                }
+        credential_path = settings.VERTEX_AI_SERVICE_ACCOUNT_FILE
+        if not credential_path:
+            return
+
+        resolved_path = Path(credential_path).expanduser()
+        if not resolved_path.is_file():
+            logger.warning(
+                "[LLMClient] VERTEX_AI_SERVICE_ACCOUNT_FILE does not exist: %s",
+                resolved_path,
             )
-            logger.debug(f"[LLMClient] Created model instance: {name}")
-        return self._model_cache[name]
+            return
 
-    def _smoke_test(self):
-        """
-        Quick startup check. Logs OK or FAIL — never raises.
-        """
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(resolved_path)
+        logger.info("[LLMClient] Using service account credentials from %s", resolved_path)
+
+    def _ensure_client(self) -> Optional[genai.Client]:
+        if self._client is not None:
+            return self._client
+
+        has_standard_vertex_auth = bool(
+            os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        )
+        can_try_express_mode = bool(
+            settings.VERTEX_AI_USE_EXPRESS_MODE and settings.GOOGLE_API_KEY
+        )
+
+        if not has_standard_vertex_auth and not can_try_express_mode:
+            self._vertex_disabled_reason = (
+                "Vertex AI is not configured. Provide service-account/ADC credentials for standard Vertex AI "
+                "or set GOOGLE_API_KEY for Vertex Express Mode."
+            )
+            logger.warning("[LLMClient] %s", self._vertex_disabled_reason)
+            return None
+
         try:
-            model = self._get_model()
-            res = model.generate_content('Return JSON: {"status": "ok"}')
-            logger.info(f"[LLMClient] Smoke test OK: {res.text[:60]}")
-        except Exception as e:
-            logger.error(f"[LLMClient] Smoke test FAILED: {e}")
+            os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+            client_kwargs: Dict[str, Any] = {
+                "vertexai": True,
+                "http_options": types.HttpOptions(api_version=settings.VERTEX_AI_API_VERSION),
+            }
+
+            if has_standard_vertex_auth:
+                if not settings.GOOGLE_CLOUD_PROJECT:
+                    self._vertex_disabled_reason = (
+                        "GOOGLE_CLOUD_PROJECT is required for standard Vertex AI authentication."
+                    )
+                    logger.warning("[LLMClient] %s", self._vertex_disabled_reason)
+                    return None
+                client_kwargs["project"] = settings.GOOGLE_CLOUD_PROJECT
+                client_kwargs["location"] = settings.GOOGLE_CLOUD_LOCATION
+                self._runtime_mode = "vertex_standard"
+            else:
+                client_kwargs["api_key"] = settings.GOOGLE_API_KEY
+                self._runtime_mode = "vertex_express"
+
+            self._client = genai.Client(**client_kwargs)
+            self._vertex_disabled_reason = None
+            logger.info(
+                "[LLMClient] Initialized Vertex AI client | mode=%s | project=%s | location=%s | default_model=%s | reasoning_model=%s | api_version=%s",
+                self._runtime_mode,
+                settings.GOOGLE_CLOUD_PROJECT,
+                settings.GOOGLE_CLOUD_LOCATION,
+                self._default_model_name,
+                self._reasoning_model_name,
+                settings.VERTEX_AI_API_VERSION,
+            )
+            return self._client
+        except Exception as exc:
+            self._vertex_disabled_reason = f"Vertex AI client initialization failed: {exc}"
+            self._runtime_mode = "unavailable"
+            logger.error("[LLMClient] %s", self._vertex_disabled_reason)
+            return None
+
+    def _vertex_error_payload(self) -> Dict[str, Any]:
+        reason = self._vertex_disabled_reason or "Vertex AI is not available."
+        return {"error": reason}
+
+    async def _run_generate_content(
+        self,
+        client: genai.Client,
+        model: str,
+        contents: Any,
+        config: types.GenerateContentConfig,
+    ) -> Any:
+        return await asyncio.get_event_loop().run_in_executor(
+            _executor,
+            lambda: client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            ),
+        )
 
     async def _ensure_mcp_tools(self):
         """
-        Connects to the MCP server, fetches tools, and caches them.
+        Connect to the MCP server, fetch tools, and cache them.
         """
         if self._mcp_tools:
             return self._mcp_tools
@@ -119,15 +194,18 @@ class LLMClient:
                     await session.initialize()
                     tools_resp = await session.list_tools()
                     self._mcp_tools = tools_resp.tools
-                    logger.info(f"[LLMClient] Discovered {len(self._mcp_tools)} tools via MCP.")
+                    logger.info(
+                        "[LLMClient] Discovered %s tools via MCP.",
+                        len(self._mcp_tools),
+                    )
                     return self._mcp_tools
-        except Exception as e:
-            logger.error(f"[LLMClient] MCP Tool Discovery Failed: {e}")
+        except Exception as exc:
+            logger.error("[LLMClient] MCP tool discovery failed: %s", exc)
             return []
 
     async def _execute_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """
-        Executes a specific tool via the MCP server.
+        Execute a specific tool via the MCP server.
         """
         try:
             from mcp import ClientSession, StdioServerParameters
@@ -143,9 +221,9 @@ class LLMClient:
                     await session.initialize()
                     result = await session.call_tool(name, arguments)
                     return self._normalize_mcp_result(result.content)
-        except Exception as e:
-            logger.error(f"[LLMClient] MCP Tool Execution Failed ({name}): {e}")
-            return f"Error executing tool: {str(e)}"
+        except Exception as exc:
+            logger.error("[LLMClient] MCP tool execution failed (%s): %s", name, exc)
+            return {"error": f"Error executing tool '{name}': {exc}"}
 
     def _normalize_mcp_result(self, content: Any) -> Any:
         """
@@ -169,9 +247,7 @@ class LLMClient:
             except Exception:
                 normalized.append(text)
 
-        if len(normalized) == 1:
-            return normalized[0]
-        return normalized
+        return normalized[0] if len(normalized) == 1 else normalized
 
     async def call_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """
@@ -180,16 +256,10 @@ class LLMClient:
         return await self._execute_mcp_tool(name, arguments)
 
     def _cache_key(self, prefix: str, model_name: str, payload: str) -> str:
-        """
-        Build a stable cache key for LLM responses.
-        """
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         return f"llm:{prefix}:{model_name}:{digest}"
 
     def _log_usage(self, method: str, prompt: str, cached: bool = False) -> None:
-        """
-        Track lightweight Gemini usage metrics in logs.
-        """
         self._usage_stats[method] += 1
         logger.info(
             "[LLMClient] %s call #%s | approx_chars=%s | cached=%s",
@@ -200,10 +270,91 @@ class LLMClient:
         )
 
     def get_usage_snapshot(self) -> Dict[str, int]:
-        """
-        Return in-memory counters for Gemini usage.
-        """
         return dict(self._usage_stats)
+
+    def get_default_model_name(self) -> str:
+        return self._default_model_name
+
+    def get_reasoning_model_name(self) -> str:
+        return self._reasoning_model_name
+
+    def _build_json_config(self) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            temperature=settings.VERTEX_AI_TEMPERATURE,
+            max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
+            tools=self._build_vertex_server_tools(),
+        )
+
+    def _build_text_config(self) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            temperature=settings.VERTEX_AI_TEMPERATURE,
+            max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
+            tools=self._build_vertex_server_tools(),
+        )
+
+    def _build_vertex_server_tools(self) -> List[Dict[str, Dict[str, Any]]]:
+        """
+        Optional Vertex-managed server tools.
+        They stay disabled by default so local behavior remains predictable.
+        """
+        tools: List[Dict[str, Dict[str, Any]]] = []
+        if settings.VERTEX_AI_ENABLE_GOOGLE_SEARCH:
+            tools.append({"google_search": {}})
+        if settings.VERTEX_AI_ENABLE_URL_CONTEXT:
+            tools.append({"url_context": {}})
+        if settings.VERTEX_AI_ENABLE_CODE_EXECUTION:
+            tools.append({"code_execution": {}})
+        return tools
+
+    def _clean_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Reduce MCP JSON schema to a function-calling safe subset.
+        """
+        cleaned = dict(schema)
+
+        if "anyOf" in cleaned:
+            non_null = [item for item in cleaned["anyOf"] if item.get("type") != "null"]
+            if non_null:
+                cleaned.update(self._clean_schema(non_null[0]))
+            cleaned.pop("anyOf", None)
+
+        if "oneOf" in cleaned:
+            non_null = [item for item in cleaned["oneOf"] if item.get("type") != "null"]
+            if non_null:
+                cleaned.update(self._clean_schema(non_null[0]))
+            cleaned.pop("oneOf", None)
+
+        for field in [
+            "title",
+            "additionalProperties",
+            "default",
+            "examples",
+            "$schema",
+        ]:
+            cleaned.pop(field, None)
+
+        properties = cleaned.get("properties")
+        if isinstance(properties, dict):
+            cleaned["properties"] = {
+                key: self._clean_schema(value)
+                for key, value in properties.items()
+                if isinstance(value, dict)
+            }
+            if "type" not in cleaned:
+                cleaned["type"] = "object"
+
+        items = cleaned.get("items")
+        if isinstance(items, dict):
+            cleaned["items"] = self._clean_schema(items)
+
+        return cleaned
+
+    def _extract_json(self, raw_text: str) -> Dict[str, Any]:
+        clean = re.sub(r"```(?:json)?", "", raw_text).replace("```", "").strip()
+        match = re.search(r"\{.*\}", clean, re.DOTALL)
+        payload = match.group(0) if match else clean
+        return json.loads(payload)
 
     async def generate_json(
         self,
@@ -213,152 +364,171 @@ class LLMClient:
         use_mcp_tools: bool = False,
     ) -> Dict[str, Any]:
         """
-        Finalized generation with automated MCP tool calling.
+        Generate structured JSON using Vertex AI.
         """
         model_name = model_override or self._default_model_name
-        cache_key = self._cache_key("json", model_name, prompt)
+        cache_prefix = "json_tools" if use_mcp_tools else "json"
+        cache_key = self._cache_key(cache_prefix, model_name, prompt)
         cached_result = cache.get(cache_key)
         if cached_result is not None:
             self._log_usage("generate_json", prompt, cached=True)
             return cached_result
 
-        mcp_tools = await self._ensure_mcp_tools() if use_mcp_tools else []
-        
-        # 1. Map MCP tools to Gemini FunctionDeclarations
-        gemini_tools = []
-        if mcp_tools:
-            def clean_schema(s):
-                if not isinstance(s, dict):
-                    return s
-                
-                # Handle anyOf/oneOf by taking the first non-null type if possible
-                if "anyOf" in s:
-                    # Prefer the first type that isn't 'null'
-                    possible = [x for x in s["anyOf"] if x.get("type") != "null"]
-                    if possible:
-                        s.update(possible[0])
-                    del s["anyOf"]
-                if "oneOf" in s:
-                    possible = [x for x in s["oneOf"] if x.get("type") != "null"]
-                    if possible:
-                        s.update(possible[0])
-                    del s["oneOf"]
-
-                # Gemini prohibited fields
-                forbidden = ["title", "additionalProperties", "default", "examples", "$schema", "description"]
-                # Note: 'description' is also sometimes problematic in nested properties in some SDK versions
-                for field in forbidden:
-                    if field in s:
-                        del s[field]
-                
-                if "properties" in s:
-                    for k, v in s["properties"].items():
-                        s["properties"][k] = clean_schema(v)
-                
-                # Ensure type is present
-                if "type" not in s and "properties" in s:
-                    s["type"] = "object"
-                    
-                return s
-
-            declarations = []
-            for tool in mcp_tools:
-                params = clean_schema(tool.inputSchema.copy())
-                
-                declarations.append(genai.types.FunctionDeclaration(
-                    name=tool.name,
-                    description=tool.description,
-                    parameters=params
-                ))
-            gemini_tools = [genai.types.Tool(function_declarations=declarations)]
-
-        # 2. Get/Configure model with tools
-        # We create a new model instance if tools are provided to ensure they are bound
-        if gemini_tools:
-            model = genai.GenerativeModel(
+        if use_mcp_tools:
+            result = await self._generate_json_with_mcp_tools(
+                prompt=prompt,
                 model_name=model_name,
-                # JSON mode is NOT compatible with function calling
-                generation_config={"temperature": 0.2},
-                tools=gemini_tools
+                retries=retries,
             )
-        else:
-            model = self._get_model(model_name)
-        
-        loop = asyncio.get_event_loop()
+            cache.set(cache_key, result, expire=settings.LLM_CACHE_EXPIRE)
+            self._log_usage("generate_json", prompt)
+            return result
+
+        start = time.monotonic()
+        last_error: Optional[Exception] = None
+        client = self._ensure_client()
+        if client is None:
+            return self._vertex_error_payload()
 
         for attempt in range(retries):
-            start = time.monotonic()
             try:
-                # Use a chat session to handle multi-turn tool calling
-                chat = model.start_chat(history=[], enable_automatic_function_calling=False)
-                
-                # First request
-                response = await loop.run_in_executor(
-                    _executor,
-                    lambda: chat.send_message(prompt)
+                response = await self._run_generate_content(
+                    client=client,
+                    model=model_name,
+                    contents=prompt,
+                    config=self._build_json_config(),
                 )
-
-                # 3. Tool Execution Loop (Multi-turn)
-                # We continue until the model provides a text response or we hit a max turn limit.
-                max_turns = 5
-                turn = 0
-                while turn < max_turns:
-                    turn += 1
-                    content_parts = response.candidates[0].content.parts
-                    
-                    # If we have function calls, execute them and feedback results
-                    if any(p.function_call for p in content_parts):
-                        tool_responses = []
-                        for part in content_parts:
-                            if part.function_call:
-                                call = part.function_call
-                                logger.info(f"[LLMClient] [{turn}/{max_turns}] Model requested tool: {call.name}")
-                                
-                                # Execute via MCP
-                                tool_result = await self._execute_mcp_tool(call.name, dict(call.args))
-                                
-                                # Prepare function response as a dict
-                                tool_responses.append({
-                                    "function_response": {
-                                        "name": call.name,
-                                        "response": {"result": tool_result}
-                                    }
-                                })
-                        
-                        # Feed back to model
-                        response = await loop.run_in_executor(
-                            _executor,
-                            lambda: chat.send_message(tool_responses)
-                        )
-                    else:
-                        # No more function calls, we have the final text (hopefully)
-                        break
-
-                # 4. Final Parse
-                # Combine all text parts from the final response
-                raw_text_parts = [p.text for p in response.candidates[0].content.parts if p.text]
-                raw = "".join(raw_text_parts).strip()
-                
-                if not raw:
-                    logger.warning("[LLMClient] No text in final model response.")
-                    return {"error": "Model returned no text after tool usage"}
-
-                clean = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
-                match = re.search(r"\{.*\}", clean, re.DOTALL)
-                parsed = json.loads(match.group(0) if match else clean)
+                raw = (response.text or "").strip()
+                parsed = self._extract_json(raw)
                 cache.set(cache_key, parsed, expire=settings.LLM_CACHE_EXPIRE)
                 self._log_usage("generate_json", prompt)
-
                 latency_ms = int((time.monotonic() - start) * 1000)
-                logger.debug(f"[LLMClient] generate_json (with tools) OK | latency={latency_ms}ms")
+                logger.debug(
+                    "[LLMClient] generate_json OK | model=%s | latency=%sms",
+                    model_name,
+                    latency_ms,
+                )
                 return parsed
-
-            except Exception as e:
-                logger.warning(f"[LLMClient] Tool Loop Error (attempt {attempt+1}/{retries}): {e}")
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[LLMClient] generate_json failed (attempt %s/%s): %s",
+                    attempt + 1,
+                    retries,
+                    exc,
+                )
                 if attempt < retries - 1:
                     await asyncio.sleep(1)
-        
-        return {"error": "LLM call with tools failed"}
+
+        logger.error("[LLMClient] generate_json exhausted retries: %s", last_error)
+        return {"error": str(last_error) if last_error else "Vertex AI JSON generation failed"}
+
+    async def _generate_json_with_mcp_tools(
+        self,
+        prompt: str,
+        model_name: str,
+        retries: int,
+    ) -> Dict[str, Any]:
+        mcp_tools = await self._ensure_mcp_tools()
+        if not mcp_tools:
+            return {"error": "No MCP tools available"}
+        client = self._ensure_client()
+        if client is None:
+            return self._vertex_error_payload()
+
+        declarations = []
+        for tool in mcp_tools:
+            schema = self._clean_schema(tool.inputSchema.copy())
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=tool.name,
+                    description=tool.description or f"MCP tool: {tool.name}",
+                    parameters_json_schema=schema,
+                )
+            )
+
+        tool_config = types.GenerateContentConfig(
+            temperature=settings.VERTEX_AI_TEMPERATURE,
+            max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
+            tools=self._build_vertex_server_tools() + [
+                types.Tool(function_declarations=declarations)
+            ],
+        )
+
+        user_prompt_content = types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=prompt)],
+        )
+        last_error: Optional[Exception] = None
+        start = time.monotonic()
+
+        for attempt in range(retries):
+            contents = [user_prompt_content]
+            try:
+                response = await self._run_generate_content(
+                    client=client,
+                    model=model_name,
+                    contents=contents,
+                    config=tool_config,
+                )
+
+                max_turns = 5
+                turn = 0
+                while response.function_calls and turn < max_turns:
+                    turn += 1
+                    function_call_content = response.candidates[0].content
+                    contents.append(function_call_content)
+
+                    tool_parts = []
+                    for function_call in response.function_calls:
+                        tool_name = function_call.name
+                        tool_args = dict(function_call.args or {})
+                        logger.info(
+                            "[LLMClient] [%s/%s] Model requested MCP tool: %s",
+                            turn,
+                            max_turns,
+                            tool_name,
+                        )
+                        tool_result = await self._execute_mcp_tool(tool_name, tool_args)
+                        tool_parts.append(
+                            types.Part.from_function_response(
+                                name=tool_name,
+                                response={"result": tool_result},
+                            )
+                        )
+
+                    contents.append(types.Content(role="tool", parts=tool_parts))
+                    response = await self._run_generate_content(
+                        client=client,
+                        model=model_name,
+                        contents=contents,
+                        config=tool_config,
+                    )
+
+                raw = (response.text or "").strip()
+                if not raw:
+                    raise ValueError("Model returned no text after MCP tool usage")
+
+                parsed = self._extract_json(raw)
+                latency_ms = int((time.monotonic() - start) * 1000)
+                logger.debug(
+                    "[LLMClient] generate_json_with_mcp_tools OK | model=%s | latency=%sms",
+                    model_name,
+                    latency_ms,
+                )
+                return parsed
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[LLMClient] MCP tool loop failed (attempt %s/%s): %s",
+                    attempt + 1,
+                    retries,
+                    exc,
+                )
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+
+        return {"error": str(last_error) if last_error else "Vertex AI tool loop failed"}
 
     async def generate_text(
         self,
@@ -367,7 +537,6 @@ class LLMClient:
     ) -> str:
         """
         Send a prompt and return raw text response.
-        Useful for non-JSON use cases.
         """
         model_name = model_override or self._default_model_name
         cache_key = self._cache_key("text", model_name, prompt)
@@ -375,21 +544,24 @@ class LLMClient:
         if cached_result is not None:
             self._log_usage("generate_text", prompt, cached=True)
             return cached_result
-
-        model = self._get_model(model_override)
-        loop = asyncio.get_event_loop()
+        client = self._ensure_client()
+        if client is None:
+            logger.error("[LLMClient] generate_text skipped: %s", self._vertex_disabled_reason)
+            return ""
 
         try:
-            response = await loop.run_in_executor(
-                _executor,
-                lambda: model.generate_content(prompt)
+            response = await self._run_generate_content(
+                client=client,
+                model=model_name,
+                contents=prompt,
+                config=self._build_text_config(),
             )
-            text = response.text.strip()
+            text = (response.text or "").strip()
             cache.set(cache_key, text, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_text", prompt)
             return text
-        except Exception as e:
-            logger.error(f"[LLMClient] generate_text failed: {type(e).__name__}: {e}")
+        except Exception as exc:
+            logger.error("[LLMClient] generate_text failed: %s: %s", type(exc).__name__, exc)
             return ""
 
     def generate_json_sync(
@@ -399,10 +571,7 @@ class LLMClient:
         timeout: int = 8,
     ) -> Dict[str, Any]:
         """
-        Synchronous blocking version — used in ThreadPoolExecutor contexts
-        (e.g., CoordinatorAgent._classify_intent runs in executor).
-
-        Returns parsed dict or {"error": "..."}
+        Synchronous blocking version used in threadpool contexts.
         """
         model_name = model_override or self._default_model_name
         cache_key = self._cache_key("json_sync", model_name, prompt)
@@ -411,33 +580,38 @@ class LLMClient:
             self._log_usage("generate_json_sync", prompt, cached=True)
             return cached_result
 
-        model = self._get_model(model_override)
         start = time.monotonic()
+        client = self._ensure_client()
+        if client is None:
+            return self._vertex_error_payload()
 
         try:
-            future = _executor.submit(model.generate_content, prompt)
+            future = _executor.submit(
+                lambda: client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=self._build_json_config(),
+                )
+            )
             result_raw = future.result(timeout=timeout)
-            raw = result_raw.text.strip()
-
-            clean = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
-            match = re.search(r"\{.*\}", clean, re.DOTALL)
-            parsed = json.loads(match.group(0) if match else clean)
+            raw = (result_raw.text or "").strip()
+            parsed = self._extract_json(raw)
             cache.set(cache_key, parsed, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_json_sync", prompt)
 
             latency_ms = int((time.monotonic() - start) * 1000)
             logger.debug(
-                f"[LLMClient] generate_json_sync OK | latency={latency_ms}ms"
+                "[LLMClient] generate_json_sync OK | model=%s | latency=%sms",
+                model_name,
+                latency_ms,
             )
             return parsed
-
-        except json.JSONDecodeError as e:
-            logger.warning(f"[LLMClient] sync JSON parse error: {e}")
+        except json.JSONDecodeError as exc:
+            logger.warning("[LLMClient] sync JSON parse error: %s", exc)
             return {"error": "JSON parse failed"}
-        except Exception as e:
-            logger.error(f"[LLMClient] sync call failed: {type(e).__name__}: {e}")
-            return {"error": str(e)}
+        except Exception as exc:
+            logger.error("[LLMClient] sync call failed: %s: %s", type(exc).__name__, exc)
+            return {"error": str(exc)}
 
 
-# ---------------------------------------------------------------------------
 llm_client = LLMClient()

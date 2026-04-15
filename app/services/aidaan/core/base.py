@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 from abc import ABC, abstractmethod
 
 from app.core.llm_client import llm_client
+from app.core.config.settings import settings
+from app.schemas.aidaan import AidaanMessageResponse
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,7 @@ class BaseAgent(ABC):
 
         Args:
             name: Human-readable ID for the agent (e.g., 'market').
-            model_name: Optional override for the underlying Gemini model.
+            model_name: Optional override for the underlying Vertex AI model.
         """
         self.name = name
         self.llm = llm_client
@@ -59,8 +61,72 @@ class BaseAgent(ABC):
     def get_model_info(self) -> Dict[str, str]:
         return {
             "agent": self.name,
-            "llm": self._model_name or "gemini-1.5-pro"
+            "llm": self._model_name or settings.VERTEX_AI_MODEL_NAME
         }
+
+    async def generate_json_response(
+        self,
+        prompt: str,
+        *,
+        use_mcp_tools: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Shared helper to call the LLM and normalize model-side error payloads.
+        """
+        parsed = await self.llm.generate_json(
+            prompt=prompt,
+            model_override=self._model_name,
+            use_mcp_tools=use_mcp_tools,
+        )
+        if parsed.get("error"):
+            raise RuntimeError(parsed["error"])
+        return parsed
+
+    def build_message_response(
+        self,
+        *,
+        reply: str,
+        conversation_id: str,
+        bullets: Optional[List[str]] = None,
+        actions: Optional[List[Dict[str, Any]]] = None,
+        model_info: Optional[Dict[str, str]] = None,
+    ) -> AidaanMessageResponse:
+        """
+        Create a standardized message response for all agents.
+        """
+        return AidaanMessageResponse(
+            reply=reply,
+            bullets=bullets or [],
+            actions=actions or [],
+            conversation_id=conversation_id,
+            model=model_info or self.get_model_info(),
+        )
+
+    def build_error_response(
+        self,
+        *,
+        reply: str,
+        conversation_id: str,
+        error: Exception | str,
+        bullets: Optional[List[str]] = None,
+        model_info: Optional[Dict[str, str]] = None,
+    ) -> AidaanMessageResponse:
+        """
+        Create a standardized fallback response while preserving the underlying error.
+        """
+        error_text = str(error)
+        fallback_bullets = list(bullets or [])
+        if not fallback_bullets:
+            fallback_bullets = [error_text]
+
+        logger.error("[%s] Request failed: %s", self.__class__.__name__, error_text)
+        return self.build_message_response(
+            reply=reply,
+            bullets=fallback_bullets,
+            actions=[],
+            conversation_id=conversation_id,
+            model_info=model_info or self.get_model_info(),
+        )
 
 
 class AgentRegistry:

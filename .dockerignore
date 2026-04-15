@@ -1,27 +1,10 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual Environment
-.venv/
-venv/
-env/
-ENV/
-
-# IDE files
-.vscode/
-.idea/
-.git/
+.git
 .gitignore
-
-# Artifacts
-brain/
-walkthrough.md
-implementation_plan.md
-task.md
-test_frontend.html
-
-# OS files
-.DS_Store
-Thumbs.db
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+.env
+*.pyc
+*.pyo
+*.pyd

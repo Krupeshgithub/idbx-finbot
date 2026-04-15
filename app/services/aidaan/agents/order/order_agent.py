@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from app.services.aidaan.core.base import BaseAgent
 from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
+from app.core.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class OrderAgent(BaseAgent):
         """
         Initialize with a model optimized for high-fidelity extraction.
         """
-        super().__init__(name="order", model_name="gemini-1.5-pro")
+        super().__init__(name="order", model_name=settings.VERTEX_AI_MODEL_NAME)
 
     async def handle_message(
         self, 
@@ -56,7 +57,7 @@ class OrderAgent(BaseAgent):
         prompt = Prompts.ORDER_PARSER.format(text=text)
         
         try:
-            parsed = await self.llm.generate_json(prompt)
+            parsed = await self.generate_json_response(prompt)
             
             instrument = parsed.get("instrument", "Unknown Asset")
             size = parsed.get("size", 0)
@@ -72,21 +73,19 @@ class OrderAgent(BaseAgent):
                 "Status: STANDBY FOR STAGING"
             ]
             
-            return AidaanMessageResponse(
+            return self.build_message_response(
                 reply=reply,
                 bullets=bullets,
-                actions=[], # In production, this would contain the 'stage_rfq' payload
                 conversation_id=conversation_id,
-                model=self.get_model_info()
+                model_info=self.get_model_info(),
             )
         except Exception as e:
-            logger.error(f"[OrderAgent] Parameter extraction failed: {str(e)}")
-            return AidaanMessageResponse(
+            return self.build_error_response(
                 reply="I couldn't identify the exact trade parameters (Size, Tenor, or Instrument).",
-                bullets=["NLP Error: Insufficient parameters extracted"],
-                actions=[],
                 conversation_id=conversation_id,
-                model=self.get_model_info()
+                error=e,
+                bullets=["NLP Error: Insufficient parameters extracted"],
+                model_info=self.get_model_info(),
             )
 
     def get_capabilities(self) -> List[str]:

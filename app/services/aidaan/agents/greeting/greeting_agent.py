@@ -12,11 +12,11 @@ Key Features:
 
 import logging
 from typing import Any, Dict, List, Optional
-from datetime import datetime
 
 from app.services.aidaan.core.base import BaseAgent
 from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
+from app.core.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class GreetingAgent(BaseAgent):
         """
         Initialize the agent with a standard conversation model.
         """
-        super().__init__(name="greeting", model_name="gemini-1.5-pro")
+        super().__init__(name="greeting", model_name=settings.VERTEX_AI_MODEL_NAME)
 
     async def handle_message(
         self, 
@@ -57,12 +57,11 @@ class GreetingAgent(BaseAgent):
         # If it's a sterile greeting, avoid LLM call to save tokens and minimize latency.
         lowered = text.lower().strip()
         if lowered in ["hi", "hello", "hey", "good morning", "good evening"]:
-            return AidaanMessageResponse(
+            return self.build_message_response(
                 reply=f"Hello, {username}. AIDAAN Desk is standing by. How can I assist with your trades today?",
                 bullets=["AIDAAN is ready for Market Analysis & Order Staging."],
-                actions=[],
                 conversation_id=conversation_id,
-                model={"agent": self.name, "llm": "heuristic"}
+                model_info={"agent": self.name, "llm": "heuristic"},
             )
 
         # --- LLM Synthesis ---
@@ -73,22 +72,20 @@ class GreetingAgent(BaseAgent):
         )
         
         try:
-            parsed = await self.llm.generate_json(prompt)
-            return AidaanMessageResponse(
+            parsed = await self.generate_json_response(prompt)
+            return self.build_message_response(
                 reply=parsed.get("reply", f"Welcome back, {username}."),
                 bullets=parsed.get("bullets", ["Ready for trade orchestration."]),
-                actions=[],
                 conversation_id=conversation_id,
-                model=self.get_model_info()
+                model_info=self.get_model_info(),
             )
         except Exception as e:
             logger.warning(f"[GreetingAgent] Synthesis failed: {str(e)}")
-            return AidaanMessageResponse(
+            return self.build_message_response(
                 reply=f"Good day, {username}. AIDAAN Desk is active and ready for your commands.",
                 bullets=["Session securely established."],
-                actions=[],
                 conversation_id=conversation_id,
-                model={"agent": self.name, "llm": "fallback"}
+                model_info={"agent": self.name, "llm": "fallback"},
             )
 
     def get_capabilities(self) -> List[str]:

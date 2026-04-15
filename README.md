@@ -28,11 +28,45 @@ source .venv/bin/bin/activate  # On Linux/macOS
 pip install -r requirements.txt
 ```
 
-### 3. Running the Server
+### 3. Vertex AI Configuration
+Create a `.env` file with the required runtime configuration:
+
+```env
+ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key
+GOOGLE_CLOUD_PROJECT=your-gcp-project-id
+GOOGLE_CLOUD_LOCATION=global
+VERTEX_AI_MODEL_NAME=gemini-2.5-flash
+VERTEX_AI_REASONING_MODEL_NAME=gemini-2.5-pro
+VERTEX_AI_API_VERSION=v1
+VERTEX_AI_USE_EXPRESS_MODE=true
+VERTEX_AI_SERVICE_ACCOUNT_FILE=/absolute/path/to/service-account.json
+VERTEX_AI_SERVICE_ACCOUNT_JSON=
+VERTEX_AI_ENABLE_GOOGLE_SEARCH=false
+VERTEX_AI_ENABLE_URL_CONTEXT=false
+VERTEX_AI_ENABLE_CODE_EXECUTION=false
+```
+
+Notes:
+- Authentication is now Vertex AI based. The app uses Application Default Credentials by default.
+- If you don't have service-account credentials, the app can try Vertex AI Express Mode with `GOOGLE_API_KEY`.
+- `VERTEX_AI_SERVICE_ACCOUNT_FILE` is optional and only needed when you do not want to rely on ADC.
+- `VERTEX_AI_SERVICE_ACCOUNT_JSON` is useful for Docker when you want to inject the full service-account JSON via env instead of mounting a file.
+- `gemini-2.5-flash` is the efficient default model, while `gemini-2.5-pro` is reserved for heavier reasoning flows.
+- Vertex server tools such as Google Search / URL Context / Code Execution are supported as optional toggles and stay off by default for predictable latency.
+
+### 4. Running the Server
 ```bash
 uvicorn asgi:app --reload
 ```
 The server will start at `http://localhost:8000`.
+
+### 5. Docker
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+If Vertex credentials are not configured yet, the container will still boot and `/health` will work, but LLM-backed routes will return a clear configuration error until you add the required Vertex settings.
 
 ---
 

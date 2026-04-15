@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from app.services.aidaan.core.base import BaseAgent
 from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
+from app.core.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,10 @@ class MarketAgent(BaseAgent):
         """
         Initialize with a model capable of complex tool orchestration.
         """
-        super().__init__(name="market", model_name="gemini-1.5-pro")
+        super().__init__(
+            name="market",
+            model_name=settings.VERTEX_AI_REASONING_MODEL_NAME,
+        )
 
     async def handle_message(
         self, 
@@ -56,27 +60,23 @@ class MarketAgent(BaseAgent):
 
         try:
             # Execute agentic loop with tool discovery enabled
-            response_data = await self.llm.generate_json(
-                prompt=orchestration_prompt,
-                use_mcp_tools=True
+            response_data = await self.generate_json_response(
+                orchestration_prompt,
+                use_mcp_tools=True,
             )
             
-            return AidaanMessageResponse(
+            return self.build_message_response(
                 reply=response_data.get("reply", "Market data analysis complete."),
                 bullets=response_data.get("bullets", []),
-                actions=[], 
                 conversation_id=conversation_id,
-                model=self.get_model_info()
+                model_info=self.get_model_info(),
             )
         except Exception as e:
-            internal_error = str(e)
-            logger.error(f"[MarketAgent] Analysis failed: {internal_error}")
-            return AidaanMessageResponse(
+            return self.build_error_response(
                 reply="I encountered an issue while performing the market deep-dive. Please verify the symbol or metric.",
-                bullets=[internal_error],
-                actions=[],
                 conversation_id=conversation_id,
-                model=self.get_model_info()
+                error=e,
+                model_info=self.get_model_info(),
             )
 
     def get_capabilities(self) -> List[str]:

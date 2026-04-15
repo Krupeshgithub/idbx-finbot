@@ -1,8 +1,10 @@
 """
-Database and general application configuration for AIDANN.
+Centralized Configuration for AIDAAN - Institutional Standard.
+=============================================================
+This module handles all application settings using Pydantic-Settings.
+Configurations are loaded from environment variables or the local .env file.
 """
 from typing import Optional
-
 from pydantic_settings import (
     BaseSettings, 
     SettingsConfigDict
@@ -12,55 +14,51 @@ from pydantic_settings import (
 class Settings(BaseSettings):
     """
     General application settings.
-
-    Attributes:
-        PROJECT_NAME: Name of the application.
-        VERSION: Current version.
-        GOOGLE_CLOUD_PROJECT: GCP project ID.
-        GOOGLE_CLOUD_LOCATION: GCP region.
-        GOOGLE_API_KEY: API key for Google services.
-        ALPHA_VANTAGE_API_KEY: API key for Alpha Vantage.
-        VERTEX_AI_MODEL_NAME: Gemini model identifier.
-        FINBERT_ENDPOINT_ID: FinBERT model endpoint.
-        ENABLE_KILL_SWITCH: Venue-level safety switch toggle.
-        REDIS_URL: Redis connection string.
-        REDIS_EXPIRE: Default cache expiration in seconds.
-        LSEG_API_BASE_URL: Base URL for LSEG Data Library.
-        LSEG_API_SNAPSHOT_PATH: Path for snapshot queries against LSEG.
-        LSEG_API_KEY: Optional API key for authenticating with LSEG.
-        LSEG_API_TIMEOUT: HTTP timeout when calling LSEG.
+    Sensitive keys (API keys, project IDs) are loaded from .env.
     """
-    MAX_PASSWORD_BYTES: int = 72
 
-    GOOGLE_API_KEY: str = ""
-    ALPHA_VANTAGE_API_KEY: str = "PJBIMYS7Q8AYB7NJ"
-
+    # --- Project Metadata ---
     PROJECT_NAME: str = "AIDANN-Backend"
     VERSION: str = "1.0.0"
-    GOOGLE_CLOUD_PROJECT: str = "your-project-id"
-    GOOGLE_CLOUD_LOCATION: str = "us-central1"
-    VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
-    FINBERT_ENDPOINT_ID: Optional[str] = None
-    ENABLE_KILL_SWITCH: bool = True
 
+    # --- API Credentials (Loaded from Environment) ---
+    GOOGLE_API_KEY: str
+    ALPHA_VANTAGE_API_KEY: str
+
+    # --- Google Cloud Platform ---
+    GOOGLE_CLOUD_PROJECT: str
+    GOOGLE_CLOUD_LOCATION: str
+    VERTEX_AI_MODEL_NAME: str = "gemini-2.0-flash"  # Default model
+    FINBERT_ENDPOINT_ID: Optional[str] = None
+
+    # --- System & Safety ---
+    ENABLE_KILL_SWITCH: bool = True
+    MAX_PASSWORD_BYTES: int = 72
+
+    # --- Infrastructure (Redis/Cache) ---
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_EXPIRE: int = 14400  # 4 hours
+    MARKET_DATA_CACHE_EXPIRE: int = 300
+    LLM_CACHE_EXPIRE: int = 1800
 
+    # --- Market Data Providers (LSEG) ---
     LSEG_API_BASE_URL: str = "https://api.lseg.com/data"
     LSEG_API_SNAPSHOT_PATH: str = "snapshot"
     LSEG_API_KEY: Optional[str] = None
     LSEG_API_TIMEOUT: float = 5.0
 
-    # MCP Configurations
+    # --- MCP (Model Context Protocol) ---
     MCP_SERVER_COMMAND: str = "python3"
-    MCP_SERVER_ARGS: str = "app/services/aidaan/mcp/server.py"
+    MCP_SERVER_ARGS: str = "app/services/aidaan/mcp/market.py"
 
+    # --- BigQuery Data Warehouse ---
     LDL_BIGQUERY_DATASET: str = "ldl_v2"
     LDL_BIGQUERY_TIMESTAMP_FIELD: str = "event_ts"
     LDL_BIGQUERY_BID_FIELD: str = "bid"
     LDL_BIGQUERY_ASK_FIELD: str = "ask"
     LDL_BIGQUERY_INSTRUMENT_FIELD: str = "instrument"
 
+    # Pydantic Configuration
     model_config = SettingsConfigDict(
         env_file=".env", 
         case_sensitive=True, 
@@ -68,4 +66,6 @@ class Settings(BaseSettings):
     )
 
 
+# Instantiate the global settings object.
+# Pydantic will automatically load values from .env on initialization.
 settings = Settings()

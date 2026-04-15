@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 
-from app.services.aidaan.coordinator import coordinator_agent
+from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
 from fastapi import (
     APIRouter, 
     WebSocket, 
@@ -26,28 +26,11 @@ async def aidaan_websocket(websocket: WebSocket):
     """
     await websocket.accept()
 
+    greeted = False
     try:
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-
-            # Safety wrap for state signals
-            try:
-                await websocket.send_json({
-                    "type": "state", 
-                    "state": "Listening", 
-                    "detail": "Trader input received."
-                })
-
-                await websocket.send_json({
-                    "type": "state",
-                    "state": "Thinking",
-                    "detail": "Coordinator processing..."
-                })
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.error(f"State signal error: {e}")
-                break # Exit if we can't even send state pulses
 
             # Intent Processing (Unified with REST)
             user_text = message.get("text", "")
@@ -58,11 +41,33 @@ async def aidaan_websocket(websocket: WebSocket):
                 "anonymous-trader"
             )
 
-            # If it's an 'init' message, we force a greeting if no text is provided
-            if msg_type == "init" and not user_text:
-                user_text = "Hello AIDAAN" # Force classification as greeting
+            # If it's an 'init' message, we force a greeting only on the FIRST instance
+            if msg_type == "init" and not user_text and not greeted:
+                user_text = "Hello AIDAAN"
+                greeted = True
+            elif msg_type == "init" and not user_text and greeted:
+                # Ignore background 'init' pulses once session is active
+                continue
 
             if user_text:
+                # Transition to 'Thinking' state only if we have a real payload
+                try:
+                    await websocket.send_json({
+                        "type": "state", 
+                        "state": "Listening", 
+                        "detail": "Trader input received."
+                    })
+
+                    await websocket.send_json({
+                        "type": "state",
+                        "state": "Thinking",
+                        "detail": "Coordinator processing..."
+                    })
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logger.error(f"State signal error: {e}")
+                    break
+
                 try:
                     response = await coordinator_agent.handle_message(
                         text=user_text,

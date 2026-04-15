@@ -1,0 +1,34 @@
+{
+    "DEFAULT": {
+        "base_dv01": 1500,
+        "pv01": 220,
+        "var_95": "0.45%",
+        "status": "GREEN"
+    },
+    "SONIA": {
+        "base_dv01": 2500,
+        "pv01": 410,
+        "var_95": "0.32%",
+        "status": "CLEAR",
+        "desk_limit": "500M"
+    },
+    "SOFR": {
+        "base_dv01": 2200,
+        "pv01": 380,
+        "var_95": "0.35%",
+        "status": "CLEAR",
+        "desk_limit": "1000M"
+    },
+    "GBP/USD": {
+        "delta": 0.85,
+        "gamma": 0.02,
+        "vol_24h": "8.5%",
+        "status": "NORMAL"
+    },
+    "UK GILTS": {
+        "duration": 8.4,
+        "convexity": 0.12,
+        "dv01": 1800,
+        "status": "WATCH"
+    }
+}

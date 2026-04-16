@@ -57,6 +57,7 @@ class RiskAgent(BaseAgent):
             AidaanMessageResponse: A detailed risk evaluation report.
         """
         logger.info(f"[RiskAgent] Analyzing risk query: {text}")
+        context = context or {}
         
         # 1. Subject Extraction (Heuristic mapping for demo/showcase efficiency)
         instrument = "DEFAULT"
@@ -78,7 +79,11 @@ class RiskAgent(BaseAgent):
         )
         
         try:
-            parsed = await self.generate_json_response(prompt)
+            parsed = await self.generate_json_response(
+                prompt,
+                conversation_id=conversation_id,
+                username=context.get("username"),
+            )
             return self.build_message_response(
                 reply=parsed.get("reply", "Risk analysis completed."),
                 bullets=parsed.get("bullets", []),

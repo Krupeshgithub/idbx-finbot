@@ -1,0 +1,104 @@
+"""
+Runtime context and memory assembly for AIDAAN agents.
+"""
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, List, Optional
+
+from app.core.config.settings import settings
+from app.db.repositories import (
+    get_recent_audit_events,
+    get_recent_messages,
+    get_recent_rfq_drafts,
+    get_recent_tool_invocations,
+    get_user_operational_bundle,
+)
+from app.db.session import get_db_session
+
+
+def _json_dump(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=True, default=str)
+
+
+class RuntimeContextService:
+    """
+    Collects compact context slices for prompts.
+    """
+
+    def get_recent_history(self, conversation_id: Optional[str]) -> List[Dict[str, Any]]:
+        if not conversation_id:
+            return []
+        with get_db_session() as session:
+            return get_recent_messages(
+                session,
+                conversation_id=conversation_id,
+                limit=settings.AIDAAN_HISTORY_WINDOW,
+            )
+
+    def get_operational_context(
+        self,
+        *,
+        username: Optional[str],
+        conversation_id: Optional[str],
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "user": None,
+            "desk": None,
+            "desk_limits": [],
+            "counterparties": [],
+            "recent_rfq_drafts": [],
+            "recent_tool_invocations": [],
+            "recent_audit_events": [],
+        }
+        with get_db_session() as session:
+            if username:
+                bundle = get_user_operational_bundle(session, username=username)
+                payload.update(bundle)
+            if conversation_id:
+                payload["recent_rfq_drafts"] = get_recent_rfq_drafts(
+                    session,
+                    conversation_id=conversation_id,
+                    limit=5,
+                )
+                payload["recent_tool_invocations"] = get_recent_tool_invocations(
+                    session,
+                    conversation_id=conversation_id,
+                    limit=5,
+                )
+                payload["recent_audit_events"] = get_recent_audit_events(
+                    session,
+                    conversation_id=conversation_id,
+                    limit=5,
+                )
+        return payload
+
+    def build_prompt_context(
+        self,
+        *,
+        base_prompt: str,
+        conversation_id: Optional[str],
+        username: Optional[str],
+    ) -> str:
+        history = self.get_recent_history(conversation_id)
+        operational = self.get_operational_context(
+            username=username,
+            conversation_id=conversation_id,
+        )
+        if not history and not any(operational.values()):
+            return base_prompt
+
+        history_block = _json_dump(history)
+        ops_block = _json_dump(operational)
+        return (
+            f"{base_prompt}\n\n"
+            "Server-side conversation memory below is authoritative and should be used for continuity.\n"
+            f"Only rely on the last {settings.AIDAAN_HISTORY_WINDOW} persisted messages for short-term memory.\n"
+            f"RECENT_HISTORY_JSON: {history_block}\n"
+            f"OPERATIONAL_CONTEXT_JSON: {ops_block}\n"
+            "Do not mention hidden database internals unless the user explicitly asks."
+        )
+
+
+runtime_context_service = RuntimeContextService()
+

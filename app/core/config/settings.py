@@ -46,6 +46,27 @@ class Settings(BaseSettings):
     ENABLE_KILL_SWITCH: bool = True
     MAX_PASSWORD_BYTES: int = 72
 
+    # --- Database / AlloyDB ---
+    DB_BACKEND: str = "postgresql"
+    DATABASE_URL: Optional[str] = None
+    DB_ECHO: bool = False
+    DB_AUTO_CREATE: bool = True
+    DB_AUTO_SEED: bool = True
+    AIDAAN_HISTORY_WINDOW: int = 5
+    ALLOYDB_ENABLED: bool = False
+    ALLOYDB_USE_AUTH_PROXY: bool = False
+    ALLOYDB_HOST: str = "127.0.0.1"
+    ALLOYDB_PORT: int = 5432
+    ALLOYDB_DATABASE: str = "aidann"
+    ALLOYDB_USER: str = "aidann_app"
+    ALLOYDB_PASSWORD: Optional[str] = None
+    ALLOYDB_PROJECT_ID: Optional[str] = None
+    ALLOYDB_REGION: Optional[str] = None
+    ALLOYDB_CLUSTER_ID: Optional[str] = None
+    ALLOYDB_INSTANCE_ID: Optional[str] = None
+    ALLOYDB_INSTANCE_URI: Optional[str] = None
+    ALLOYDB_SSL_MODE: str = "require"
+
     # --- Infrastructure (Redis/Cache) ---
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_EXPIRE: int = 14400  # 4 hours

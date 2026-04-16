@@ -25,12 +25,15 @@ from app.services.aidaan.agents.market.market_agent import market_agent
 from app.services.aidaan.agents.risk.risk_agent import risk_agent
 from app.services.aidaan.agents.order.order_agent import order_agent
 from app.services.aidaan.agents.greeting.greeting_agent import greeting_agent
+from app.services.aidaan.agents.context.context_agent import context_agent
+from app.services.aidaan.runtime_context import runtime_context_service
 
 # Register agents with the global registry
 registry.register("market", market_agent)
 registry.register("risk", risk_agent)
 registry.register("order", order_agent)
 registry.register("greeting", greeting_agent)
+registry.register("context", context_agent)
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +70,12 @@ class CoordinatorAgent(BaseAgent):
         logger.info(f"[Coordinator] Handling session {conv_id}: {text[:50]}...")
 
         # 1. Routing phase
-        agent_id = await self._route_intent(text)
+        context = context or {}
+        agent_id = await self._route_intent(
+            text,
+            conversation_id=conv_id,
+            username=context.get("username"),
+        )
         
         target_agent = registry.get_agent(agent_id or "greeting")
         if target_agent:
@@ -85,7 +93,13 @@ class CoordinatorAgent(BaseAgent):
             model_info={"agent": self.name, "llm": "fallback"},
         )
 
-    async def _route_intent(self, text: str) -> Optional[str]:
+    async def _route_intent(
+        self,
+        text: str,
+        *,
+        conversation_id: Optional[str] = None,
+        username: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Classification logic for routing requests.
         Priority:
@@ -106,10 +120,18 @@ class CoordinatorAgent(BaseAgent):
             return "risk"
         if any(k in lowered for k in ["stage", "rfq", "buy", "sell", "sonia", "sofr", "order"]):
             return "order"
+        if any(k in lowered for k in ["history", "previous", "earlier", "desk", "profile", "counterparty", "context", "session"]):
+            return "context"
 
         # --- LLM Intent Check ---
         prompt = Prompts.COORDINATOR_ROUTER.format(text=text)
         try:
+            if conversation_id:
+                prompt = runtime_context_service.build_prompt_context(
+                    base_prompt=prompt,
+                    conversation_id=conversation_id,
+                    username=username,
+                )
             parsed = await self.llm.generate_json(prompt)
             if parsed.get("error"):
                 logger.warning("[Coordinator] LLM routing unavailable: %s", parsed["error"])

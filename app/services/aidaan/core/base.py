@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from app.core.llm_client import llm_client
 from app.core.config.settings import settings
 from app.schemas.aidaan import AidaanMessageResponse
+from app.services.aidaan.runtime_context import runtime_context_service
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +69,19 @@ class BaseAgent(ABC):
         self,
         prompt: str,
         *,
+        conversation_id: Optional[str] = None,
+        username: Optional[str] = None,
         use_mcp_tools: bool = False,
     ) -> Dict[str, Any]:
         """
         Shared helper to call the LLM and normalize model-side error payloads.
         """
+        if conversation_id:
+            prompt = runtime_context_service.build_prompt_context(
+                base_prompt=prompt,
+                conversation_id=conversation_id,
+                username=username,
+            )
         parsed = await self.llm.generate_json(
             prompt=prompt,
             model_override=self._model_name,

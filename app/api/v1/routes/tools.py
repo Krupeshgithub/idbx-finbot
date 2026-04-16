@@ -7,6 +7,7 @@ from app.schemas.aidaan import (
     ToolInvokeRequest,
     ToolInvokeResponse
 )
+from app.services.persistence import persistence_service
 
 router = APIRouter()
 
@@ -25,7 +26,7 @@ async def invoke_tool(payload: ToolInvokeRequest):
     # In Phase 2, this will connect to the MCP executor.
     
     if payload.tool_name == "draft_rfq_ticket":
-        return ToolInvokeResponse(
+        response = ToolInvokeResponse(
             ok=True,
             result={
                 "status": "ticket_prepared",
@@ -34,11 +35,27 @@ async def invoke_tool(payload: ToolInvokeRequest):
                 "requires_human_confirm": True
             }
         )
+        persistence_service.persist_tool_invocation(
+            username=payload.user_id,
+            conversation_id=payload.arguments.get("conversation_id"),
+            tool_name=payload.tool_name,
+            arguments=payload.arguments,
+            result=response.result or {},
+        )
+        return response
     
-    return ToolInvokeResponse(
+    response = ToolInvokeResponse(
         ok=True,
         result={
             "message": f"Successfully invoked tool '{payload.tool_name}'. Phase 1 result: Simulation OK."
         },
         error=None
     )
+    persistence_service.persist_tool_invocation(
+        username=payload.user_id,
+        conversation_id=payload.arguments.get("conversation_id"),
+        tool_name=payload.tool_name,
+        arguments=payload.arguments,
+        result=response.result or {},
+    )
+    return response

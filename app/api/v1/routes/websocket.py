@@ -7,6 +7,7 @@ import json
 import logging
 
 from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
+from app.services.persistence import persistence_service
 from fastapi import (
     APIRouter, 
     WebSocket, 
@@ -40,6 +41,8 @@ async def aidaan_websocket(websocket: WebSocket):
                 "user_id",
                 "anonymous-trader"
             )
+            context = dict(message.get("context", {}) or {})
+            context.setdefault("username", user_id)
 
             # If it's an 'init' message, we force a greeting only on the FIRST instance
             if msg_type == "init" and not user_text and not greeted:
@@ -72,7 +75,15 @@ async def aidaan_websocket(websocket: WebSocket):
                     response = await coordinator_agent.handle_message(
                         text=user_text,
                         conversation_id=conv_id,
-                        context=message.get("context", {})
+                        context=context
+                    )
+                    persistence_service.persist_message_exchange(
+                        conversation_id=response.conversation_id,
+                        username=user_id,
+                        user_text=user_text,
+                        response_payload=response.model_dump(),
+                        channel="websocket",
+                        context=context,
                     )
 
                     # Stream Final Result

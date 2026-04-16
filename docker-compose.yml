@@ -23,8 +23,28 @@ services:
       - VERTEX_AI_ENABLE_URL_CONTEXT=${VERTEX_AI_ENABLE_URL_CONTEXT:-false}
       - VERTEX_AI_ENABLE_CODE_EXECUTION=${VERTEX_AI_ENABLE_CODE_EXECUTION:-false}
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
+      - DB_BACKEND=${DB_BACKEND:-postgresql}
+      - DATABASE_URL=${DATABASE_URL:-postgresql+psycopg2://aidann_app:aidann_dev_password@postgres:5432/aidann}
+      - DB_ECHO=${DB_ECHO:-false}
+      - DB_AUTO_CREATE=${DB_AUTO_CREATE:-true}
+      - DB_AUTO_SEED=${DB_AUTO_SEED:-true}
+      - ALLOYDB_ENABLED=${ALLOYDB_ENABLED:-false}
+      - ALLOYDB_USE_AUTH_PROXY=${ALLOYDB_USE_AUTH_PROXY:-false}
+      - ALLOYDB_HOST=${ALLOYDB_HOST:-127.0.0.1}
+      - ALLOYDB_PORT=${ALLOYDB_PORT:-5432}
+      - ALLOYDB_DATABASE=${ALLOYDB_DATABASE:-aidann}
+      - ALLOYDB_USER=${ALLOYDB_USER:-aidann_app}
+      - ALLOYDB_PASSWORD=${ALLOYDB_PASSWORD:-aidann_dev_password}
+      - ALLOYDB_PROJECT_ID=${ALLOYDB_PROJECT_ID:-}
+      - ALLOYDB_REGION=${ALLOYDB_REGION:-}
+      - ALLOYDB_CLUSTER_ID=${ALLOYDB_CLUSTER_ID:-}
+      - ALLOYDB_INSTANCE_ID=${ALLOYDB_INSTANCE_ID:-}
+      - ALLOYDB_INSTANCE_URI=${ALLOYDB_INSTANCE_URI:-}
+      - ALLOYDB_SSL_MODE=${ALLOYDB_SSL_MODE:-require}
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     volumes:
       - .:/app
@@ -37,7 +57,6 @@ services:
       start_period: 10s
 
   redis:
-
     image: redis:7.2-alpine
     container_name: aidaan_redis
     ports:
@@ -50,5 +69,23 @@ services:
       timeout: 5s
       retries: 5
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: aidaan_postgres
+    environment:
+      - POSTGRES_DB=aidann
+      - POSTGRES_USER=aidann_app
+      - POSTGRES_PASSWORD=aidann_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aidann_app -d aidann"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   redis_data:
+  postgres_data:

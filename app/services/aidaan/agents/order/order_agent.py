@@ -52,12 +52,17 @@ class OrderAgent(BaseAgent):
             AidaanMessageResponse: Summary of the parsed order ticket.
         """
         logger.info(f"[OrderAgent] Attempting NLP-to-Action parse: {text}")
+        context = context or {}
         
         # Externalized institutional parser prompt
         prompt = Prompts.ORDER_PARSER.format(text=text)
         
         try:
-            parsed = await self.generate_json_response(prompt)
+            parsed = await self.generate_json_response(
+                prompt,
+                conversation_id=conversation_id,
+                username=context.get("username"),
+            )
             
             instrument = parsed.get("instrument", "Unknown Asset")
             size = parsed.get("size", 0)

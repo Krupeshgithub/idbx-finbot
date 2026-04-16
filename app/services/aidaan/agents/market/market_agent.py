@@ -54,6 +54,7 @@ class MarketAgent(BaseAgent):
             AidaanMessageResponse: A synthesized, professional financial report.
         """
         logger.info(f"[MarketAgent] Analyzing market query: {text}")
+        context = context or {}
         
         # Externalized professional orchestration prompt
         orchestration_prompt = Prompts.MARKET_ORCHESTRATION.format(text=text)
@@ -62,6 +63,8 @@ class MarketAgent(BaseAgent):
             # Execute agentic loop with tool discovery enabled
             response_data = await self.generate_json_response(
                 orchestration_prompt,
+                conversation_id=conversation_id,
+                username=context.get("username"),
                 use_mcp_tools=True,
             )
             

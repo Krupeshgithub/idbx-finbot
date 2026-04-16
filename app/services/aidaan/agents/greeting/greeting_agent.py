@@ -72,7 +72,11 @@ class GreetingAgent(BaseAgent):
         )
         
         try:
-            parsed = await self.generate_json_response(prompt)
+            parsed = await self.generate_json_response(
+                prompt,
+                conversation_id=conversation_id,
+                username=username,
+            )
             return self.build_message_response(
                 reply=parsed.get("reply", f"Welcome back, {username}."),
                 bullets=parsed.get("bullets", ["Ready for trade orchestration."]),

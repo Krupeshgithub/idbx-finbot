@@ -216,6 +216,7 @@ class Prompts:
     2. "risk" - PV01/DV01, sentiment, compliance.
     3. "order" - RFQ staging, trade execution, parsing parameters.
     4. "greeting" - Hellos and general status.
+    5. "context" - Conversation history, desk profile, RFQ history, counterparties, user context.
 
     Request: "{text}"
     Return JSON: {{"intent": "category"}}
@@ -248,6 +249,19 @@ class Prompts:
     {{
         "reply": "High-level summary of risk status",
         "bullets": ["detailed metric 1", "detailed metric 2", ...]
+    }}
+    """
+
+    CONTEXT_SYNTHESIS = """
+    You are AIDAAN's operational context specialist.
+    Answer using the server-side desk, user, RFQ, tool, and audit context made available in the prompt.
+
+    User Query: "{text}"
+
+    Return JSON:
+    {{
+        "reply": "A concise professional answer grounded in the operational records.",
+        "bullets": ["Key context point 1", "Key context point 2", "Key context point 3"]
     }}
     """
 

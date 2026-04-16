@@ -6,6 +6,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
 from app.core.security import decode_access_token
+from app.db.repositories import get_user_by_username
+from app.db.session import get_db_session
 from app.schemas.auth import UserContext
 
 
@@ -33,6 +35,13 @@ async def get_current_user(
     if username is None:
         raise credentials_exception
         
-    # In Phase 1, we return a generic context.
-    # In Phase 2, this will query the User Database.
-    return UserContext(username=username)
+    with get_db_session() as session:
+        user = get_user_by_username(session, username)
+        if user is None:
+            raise credentials_exception
+        return UserContext(
+            username=user.username,
+            email=user.email,
+            role=user.role,
+            is_active=user.is_active,
+        )

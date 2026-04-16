@@ -12,12 +12,13 @@ Key Features:
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from app.services.aidaan.core.base import BaseAgent, registry
 from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
+from app.core.config.settings import settings
 
 # Import specialized agents for registration
 from app.services.aidaan.agents.market.market_agent import market_agent
@@ -43,7 +44,7 @@ class CoordinatorAgent(BaseAgent):
         """
         Initialize the Coordinator with a high-capacity model for routing tasks.
         """
-        super().__init__(name="coordinator", model_name="gemini-1.5-pro")
+        super().__init__(name="coordinator", model_name=settings.VERTEX_AI_MODEL_NAME)
 
     async def handle_message(
         self, 
@@ -77,12 +78,11 @@ class CoordinatorAgent(BaseAgent):
             )
 
         # Fallback response if no agent could handle the request
-        return AidaanMessageResponse(
+        return self.build_message_response(
             reply="I'm here to help with your trading desk operations. You can ask about market analysis, risk metrics, or staging trade RFQs.",
             bullets=["Self-aware session active", "Token-optimized routing"],
-            actions=[],
             conversation_id=conv_id,
-            model={"agent": self.name, "llm": "fallback"}
+            model_info={"agent": self.name, "llm": "fallback"},
         )
 
     async def _route_intent(self, text: str) -> Optional[str]:
@@ -111,6 +111,9 @@ class CoordinatorAgent(BaseAgent):
         prompt = Prompts.COORDINATOR_ROUTER.format(text=text)
         try:
             parsed = await self.llm.generate_json(prompt)
+            if parsed.get("error"):
+                logger.warning("[Coordinator] LLM routing unavailable: %s", parsed["error"])
+                return None
             return parsed.get("intent")
         except Exception as e:
             logger.warning(f"[Coordinator] LLM routing failed: {e}")

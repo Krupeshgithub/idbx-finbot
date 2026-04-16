@@ -2,6 +2,7 @@
 Exhaustive Alpha Vantage MCP Server
 """
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import httpx
@@ -20,10 +21,14 @@ async def _fetch_av(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     HTTP helper for Alpha Vantage.
     """
-    _key = "PJBIMYS7Q8AYB7NJ"
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY")
+    if not api_key:
+        return {
+            "error": "ALPHA_VANTAGE_API_KEY is not configured."
+        }
 
     request_params = dict(params)
-    request_params["apikey"] = _key
+    request_params["apikey"] = api_key
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

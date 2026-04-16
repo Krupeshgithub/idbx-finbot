@@ -66,7 +66,7 @@ class Prompts:
     """
 
     # =========================================================================
-    # 2. MARKET AGENT — Gemini Client Prompts
+    # 2. MARKET AGENT — LLM Parsing/Formatting Prompts
     # =========================================================================
 
     MARKET_REQUEST_PARSER = """Parse this market-data request into JSON only.

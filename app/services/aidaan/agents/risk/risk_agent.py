@@ -18,6 +18,7 @@ from app.services.aidaan.core.base import BaseAgent
 from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
 from app.services.aidaan.providers.risk_provider import JSONRiskProvider
+from app.core.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class RiskAgent(BaseAgent):
         Args:
             provider: Pluggable data source (JSON/BigQuery) for risk data.
         """
-        super().__init__(name="risk", model_name="gemini-1.5-pro")
+        super().__init__(name="risk", model_name=settings.VERTEX_AI_MODEL_NAME)
         self.provider = provider
 
     async def handle_message(
@@ -77,22 +78,20 @@ class RiskAgent(BaseAgent):
         )
         
         try:
-            parsed = await self.llm.generate_json(prompt)
-            return AidaanMessageResponse(
+            parsed = await self.generate_json_response(prompt)
+            return self.build_message_response(
                 reply=parsed.get("reply", "Risk analysis completed."),
                 bullets=parsed.get("bullets", []),
-                actions=[],
                 conversation_id=conversation_id,
-                model=self.get_model_info()
+                model_info=self.get_model_info(),
             )
         except Exception as e:
-            logger.error(f"[RiskAgent] Synthesis failed: {str(e)}")
-            return AidaanMessageResponse(
+            return self.build_error_response(
                 reply="I'm unable to calculate precise risk metrics currently. Please verify your desk connection.",
-                bullets=[f"System Notice: {str(e)}"],
-                actions=[],
                 conversation_id=conversation_id,
-                model=self.get_model_info()
+                error=e,
+                bullets=[f"System Notice: {str(e)}"],
+                model_info=self.get_model_info(),
             )
 
     def get_capabilities(self) -> List[str]:

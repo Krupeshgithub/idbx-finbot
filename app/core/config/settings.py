@@ -5,6 +5,7 @@ This module handles all application settings using Pydantic-Settings.
 Configurations are loaded from environment variables or the local .env file.
 """
 from typing import Optional
+
 from pydantic_settings import (
     BaseSettings, 
     SettingsConfigDict
@@ -22,13 +23,23 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
 
     # --- API Credentials (Loaded from Environment) ---
-    GOOGLE_API_KEY: str
-    ALPHA_VANTAGE_API_KEY: str
+    GOOGLE_API_KEY: Optional[str] = None
+    ALPHA_VANTAGE_API_KEY: Optional[str] = None
 
     # --- Google Cloud Platform ---
-    GOOGLE_CLOUD_PROJECT: str
-    GOOGLE_CLOUD_LOCATION: str
-    VERTEX_AI_MODEL_NAME: str = "gemini-2.0-flash"  # Default model
+    GOOGLE_CLOUD_PROJECT: Optional[str] = None
+    GOOGLE_CLOUD_LOCATION: str = "global"
+    VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
+    VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
+    VERTEX_AI_API_VERSION: str = "v1"
+    VERTEX_AI_TEMPERATURE: float = 0.2
+    VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192
+    VERTEX_AI_USE_EXPRESS_MODE: bool = True
+    VERTEX_AI_SERVICE_ACCOUNT_FILE: Optional[str] = None
+    VERTEX_AI_SERVICE_ACCOUNT_JSON: Optional[str] = None
+    VERTEX_AI_ENABLE_GOOGLE_SEARCH: bool = False
+    VERTEX_AI_ENABLE_URL_CONTEXT: bool = False
+    VERTEX_AI_ENABLE_CODE_EXECUTION: bool = False
     FINBERT_ENDPOINT_ID: Optional[str] = None
 
     # --- System & Safety ---

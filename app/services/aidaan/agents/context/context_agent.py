@@ -22,6 +22,7 @@ class ContextAgent(BaseAgent):
         text: str,
         conversation_id: str,
         context: Optional[Dict[str, Any]] = None,
+        tool_callback: Optional[callable] = None,
     ) -> AidaanMessageResponse:
         context = context or {}
         username = context.get("username")

@@ -14,6 +14,7 @@ Key Features:
 import logging
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+import time
 
 from app.services.aidaan.core.base import BaseAgent, registry
 from app.schemas.aidaan import AidaanMessageResponse
@@ -53,7 +54,8 @@ class CoordinatorAgent(BaseAgent):
         self, 
         text: str, 
         conversation_id: Optional[str] = None, 
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        tool_callback: Optional[callable] = None,
     ) -> AidaanMessageResponse:
         """
         Entry point for all user messages. Determines the intent and delegates work.
@@ -68,6 +70,7 @@ class CoordinatorAgent(BaseAgent):
         """
         conv_id = conversation_id or f"conv-{uuid4().hex[:8]}"
         logger.info(f"[Coordinator] Handling session {conv_id}: {text[:50]}...")
+        start_time = time.monotonic()
 
         # 1. Routing phase
         context = context or {}
@@ -79,18 +82,24 @@ class CoordinatorAgent(BaseAgent):
         
         target_agent = registry.get_agent(agent_id or "greeting")
         if target_agent:
-            return await target_agent.handle_message(
+            response = await target_agent.handle_message(
                 text=text,
                 conversation_id=conv_id,
-                context=context
+                context=context,
+                tool_callback=tool_callback,
             )
+            # Inject latency into the final response
+            response.latency_ms = (time.monotonic() - start_time) * 1000
+            return response
 
         # Fallback response if no agent could handle the request
+        latency_ms = (time.monotonic() - start_time) * 1000
         return self.build_message_response(
             reply="I'm here to help with your trading desk operations. You can ask about market analysis, risk metrics, or staging trade RFQs.",
             bullets=["Self-aware session active", "Token-optimized routing"],
             conversation_id=conv_id,
             model_info={"agent": self.name, "llm": "fallback"},
+            latency_ms=latency_ms,
         )
 
     async def _route_intent(
@@ -111,31 +120,39 @@ class CoordinatorAgent(BaseAgent):
         """
         lowered = text.lower()
         
-        # --- Heuristics (Token Saving) ---
-        if any(k in lowered for k in ["hi", "hello", "good morning", "hey"]):
+        # --- Heuristics (Token Saving / High Speed) ---
+        if any(k in lowered for k in ["hi", "hello", "good morning", "hey", "greeting"]):
             return "greeting"
-        if any(k in lowered for k in ["price", "market", "gold", "oil", "inflation", "gdp"]):
+        
+        # Comprehensive Market Keywords (Stocks, Indices, Commodities, Financials)
+        market_keywords = [
+            "price", "market", "gold", "oil", "inflation", "gdp", "apple", "google", "meta", "tesla", 
+            "microsoft", "amazon", "nvidia", "aapl", "goog", "msft", "tsla", "nvda", "index", "sp500", 
+            "nasdaq", "dow", "ftse", "dax", "nifty", "dividend", "yield", "earnings", "eps", "pe ratio", 
+            "revenue", "balance sheet", "income statement", "cash flow", "commodity", "crude", "silver"
+        ]
+        if any(k in lowered for k in market_keywords):
             return "market"
-        if any(k in lowered for k in ["risk", "dv01", "pv01", "limit"]):
+            
+        if any(k in lowered for k in ["risk", "dv01", "pv01", "limit", "exposure", "var", "stress"]):
             return "risk"
-        if any(k in lowered for k in ["stage", "rfq", "buy", "sell", "sonia", "sofr", "order"]):
+            
+        if any(k in lowered for k in ["stage", "rfq", "buy", "sell", "sonia", "sofr", "order", "execution", "quote"]):
             return "order"
-        if any(k in lowered for k in ["history", "previous", "earlier", "desk", "profile", "counterparty", "context", "session"]):
+            
+        if any(k in lowered for k in ["history", "previous", "earlier", "desk", "profile", "counterparty", "context", "session", "last question", "memory"]):
             return "context"
 
         # --- LLM Intent Check ---
         prompt = Prompts.COORDINATOR_ROUTER.format(text=text)
         try:
-            if conversation_id:
-                prompt = runtime_context_service.build_prompt_context(
-                    base_prompt=prompt,
-                    conversation_id=conversation_id,
-                    username=username,
-                )
-            parsed = await self.llm.generate_json(prompt)
-            if parsed.get("error"):
-                logger.warning("[Coordinator] LLM routing unavailable: %s", parsed["error"])
-                return None
+            parsed = await self.generate_json_response(
+                prompt,
+                conversation_id=conversation_id,
+                username=username,
+                response_schema=Prompts.INTENT_SCHEMA,
+                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Intent Classifier"
+            )
             return parsed.get("intent")
         except Exception as e:
             logger.warning(f"[Coordinator] LLM routing failed: {e}")

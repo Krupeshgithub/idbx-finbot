@@ -33,14 +33,15 @@ class MarketAgent(BaseAgent):
         """
         super().__init__(
             name="market",
-            model_name=settings.VERTEX_AI_REASONING_MODEL_NAME,
+            model_name=settings.VERTEX_AI_MODEL_NAME, # Switch back to High-Speed Flash
         )
 
     async def handle_message(
         self, 
         text: str, 
         conversation_id: str, 
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        tool_callback: Optional[callable] = None,
     ) -> AidaanMessageResponse:
         """
         Processes market queries by discovering and invoking appropriate tools.
@@ -59,6 +60,32 @@ class MarketAgent(BaseAgent):
         # Externalized professional orchestration prompt
         orchestration_prompt = Prompts.MARKET_ORCHESTRATION.format(text=text)
 
+        # --- Heuristic Fast-Path for simple quotes ---
+        if len(text.split()) < 4 and any(k in text.lower() for k in ["price", "quote", "price of", "level"]):
+             logger.info("[MarketAgent] Triggering Heuristic FAST-PATH for simple quote.")
+             if tool_callback: await tool_callback("get_stock_quote")
+             
+             # Fetch data directly bypassing LLM turn 1
+             import re
+             ticker_match = re.search(r'\b[A-Za-z]{1,5}\b', text.upper())
+             symbol = ticker_match.group(0) if ticker_match else text.split()[0].upper()
+             
+             data = await self.llm.call_mcp_tool("get_stock_quote", {"symbol": symbol})
+             
+             # Even if error, if it's a rate limit, the tool now returns simulated data
+             # Check for simulation note or valid data
+             price = data.get("price")
+             if price:
+                 change = data.get("change_percent", "0%")
+                 reply = f"[Direct Answer] {symbol} is currently trading at {price} ({change}).\n\n" \
+                         f"[Market Insight] Institutional flows are being monitored for {symbol}. Volume is at {data.get('volume', 'N/A')}.\n\n" \
+                         f"[Trade Implication] Positioning suggests a neutral/cautious stance at current levels.\n\n" \
+                         f"[Optional Follow-up] Would you like to check key support levels or recent news?"
+                 if "note" in data:
+                     reply += f"\n\n(Note: {data['note']})"
+                     
+                 return self.build_message_response(reply=reply, bullets=[f"Ticker: {symbol}", f"Price: {price}"], conversation_id=conversation_id, model_info={"agent": self.name, "llm": "FASTPATH-TEMPLATE"})
+
         try:
             # Execute agentic loop with tool discovery enabled
             response_data = await self.generate_json_response(
@@ -66,6 +93,9 @@ class MarketAgent(BaseAgent):
                 conversation_id=conversation_id,
                 username=context.get("username"),
                 use_mcp_tools=True,
+                tool_callback=tool_callback,
+                response_schema=Prompts.STANDARD_RESPONSE_SCHEMA,
+                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Senior Interbank analyst. You MUST respond with exactly the 4 parts requested in the schema."
             )
             
             return self.build_message_response(

@@ -38,7 +38,8 @@ class OrderAgent(BaseAgent):
         self, 
         text: str, 
         conversation_id: str, 
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        tool_callback: Optional[callable] = None,
     ) -> AidaanMessageResponse:
         """
         Parses trade requests and prepares a structured staging summary.

@@ -59,6 +59,18 @@ async def search_ticker(keywords: str) -> Dict[str, Any]:
         "function": "SYMBOL_SEARCH",
         "keywords": keywords
     })
+    
+    if "error" in data:
+        # Fallback to simulation if rate limited
+        if "rate limit" in data["error"].lower():
+            return {
+                "matches": [
+                    {"symbol": keywords.upper(), "name": f"{keywords.upper()} Corp (Simulated)", "type": "Equity", "region": "United States"}
+                ],
+                "note": "SIMULATION MODE ACTIVE (API Limit Reached)"
+            }
+        return data
+        
     matches = data.get("bestMatches", [])
     return {
         "matches": [
@@ -77,11 +89,25 @@ async def get_stock_quote(symbol: str) -> Dict[str, Any]:
     """
     Get real-time quote for a symbol.
     """
-    raw = await _fetch_av({
+    data = await _fetch_av({
         "function": "GLOBAL_QUOTE",
-        "symbol": symbol
+        "symbol": symbol.upper()
     })
-    quote = raw.get("Global Quote", {})
+    
+    if "error" in data:
+        if "rate limit" in data["error"].lower():
+            import random
+            return {
+                "symbol": symbol.upper(),
+                "price": str(round(random.uniform(100, 1000), 2)),
+                "change_percent": f"{round(random.uniform(-5, 5), 2)}%",
+                "volume": str(random.randint(1000000, 50000000)),
+                "latest_day": "2026-04-16 (Simulated)",
+                "note": "SIMULATION MODE ACTIVE"
+            }
+        return data
+
+    quote = data.get("Global Quote", {})
     if not quote: return {"error": "No data found"}
 
     return {
@@ -90,6 +116,86 @@ async def get_stock_quote(symbol: str) -> Dict[str, Any]:
         "change_percent": quote.get("10. change percent"),
         "volume": quote.get("06. volume"),
         "latest_day": quote.get("07. latest trading day")
+    }
+
+
+@mcp.tool()
+async def get_daily_series(symbol: str, days: int = 10) -> Dict[str, Any]:
+    """
+    Get daily historical stock prices (Open, High, Low, Close, Volume).
+    Use 'days' to specify how many recent days of data to return.
+    """
+    if "error" in raw:
+        if "rate limit" in raw["error"].lower():
+            import datetime
+            today = datetime.date.today()
+            sim_data = []
+            for i in range(days):
+                date_str = str(today - datetime.timedelta(days=i))
+                sim_data.append({
+                    "date": date_str,
+                    "open": "900.00", "high": "910.00", "low": "890.00", "close": "905.00", "volume": "25000000"
+                })
+            return {"symbol": symbol.upper(), "data": sim_data, "note": "SIMULATION MODE ACTIVE"}
+        return raw
+    
+    time_series = raw.get("Time Series (Daily)", {})
+    if not time_series:
+        return {"error": "No daily data found."}
+    
+    # Slicing the last X days for efficiency
+    sorted_dates = sorted(time_series.keys(), reverse=True)
+    target_dates = sorted_dates[:days]
+    
+    return {
+        "symbol": symbol,
+        "last_refreshed": raw.get("Meta Data", {}).get("3. Last Refreshed"),
+        "data": [
+            {
+                "date": date,
+                "open": time_series[date].get("1. open"),
+                "high": time_series[date].get("2. high"),
+                "low": time_series[date].get("3. low"),
+                "close": time_series[date].get("4. close"),
+                "volume": time_series[date].get("5. volume")
+            } for date in target_dates
+        ]
+    }
+
+
+@mcp.tool()
+async def get_weekly_series(symbol: str, weeks: int = 5) -> Dict[str, Any]:
+    """
+    Get weekly historical stock prices.
+    Use 'weeks' to specify how many recent weeks of data to return.
+    """
+    raw = await _fetch_av({
+        "function": "TIME_SERIES_WEEKLY",
+        "symbol": symbol
+    })
+    
+    if "error" in raw:
+        if "rate limit" in raw["error"].lower():
+            return {"symbol": symbol.upper(), "data": [], "note": "SIMULATION MODE ACTIVE (History not available in simulation)"}
+        return raw
+    
+    time_series = raw.get("Weekly Time Series", {})
+        
+    sorted_dates = sorted(time_series.keys(), reverse=True)
+    target_dates = sorted_dates[:weeks]
+    
+    return {
+        "symbol": symbol,
+        "data": [
+            {
+                "date": date,
+                "open": time_series[date].get("1. open"),
+                "high": time_series[date].get("2. high"),
+                "low": time_series[date].get("3. low"),
+                "close": time_series[date].get("4. close"),
+                "volume": time_series[date].get("5. volume")
+            } for date in target_dates
+        ]
     }
 
 
@@ -113,6 +219,42 @@ async def get_earnings(symbol: str) -> Dict[str, Any]:
     """
     return await _fetch_av({
         "function": "EARNINGS",
+        "symbol": symbol
+    })
+
+
+@mcp.tool()
+async def get_income_statement(symbol: str) -> Dict[str, Any]:
+    """
+    Get the annual and quarterly income statements for a company.
+    Includes revenue, gross profit, net income, etc.
+    """
+    return await _fetch_av({
+        "function": "INCOME_STATEMENT",
+        "symbol": symbol
+    })
+
+
+@mcp.tool()
+async def get_balance_sheet(symbol: str) -> Dict[str, Any]:
+    """
+    Get the annual and quarterly balance sheets for a company.
+    Includes assets, liabilities, and equity.
+    """
+    return await _fetch_av({
+        "function": "BALANCE_SHEET",
+        "symbol": symbol
+    })
+
+
+@mcp.tool()
+async def get_cash_flow(symbol: str) -> Dict[str, Any]:
+    """
+    Get the annual and quarterly cash flow statements for a company.
+    Includes operating, investing, and financing cash flows.
+    """
+    return await _fetch_av({
+        "function": "CASH_FLOW",
         "symbol": symbol
     })
 

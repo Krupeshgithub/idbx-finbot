@@ -72,10 +72,21 @@ async def aidaan_websocket(websocket: WebSocket):
                     break
 
                 try:
+                    async def tool_pulse(tool_name: str):
+                        try:
+                            await websocket.send_json({
+                                "type": "state",
+                                "state": "Thinking",
+                                "detail": f"Executing {tool_name}..."
+                            })
+                        except Exception:
+                            pass # Connection might have closed
+
                     response = await coordinator_agent.handle_message(
                         text=user_text,
                         conversation_id=conv_id,
-                        context=context
+                        context=context,
+                        tool_callback=tool_pulse
                     )
                     persistence_service.persist_message_exchange(
                         conversation_id=response.conversation_id,

@@ -37,7 +37,8 @@ class BaseAgent(ABC):
         self, 
         text: str, 
         conversation_id: str, 
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        tool_callback: Optional[callable] = None,
     ) -> Any:
         """
         Asynchronously processes a user message.
@@ -72,6 +73,9 @@ class BaseAgent(ABC):
         conversation_id: Optional[str] = None,
         username: Optional[str] = None,
         use_mcp_tools: bool = False,
+        tool_callback: Optional[callable] = None,
+        response_schema: Optional[Any] = None,
+        system_instruction: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Shared helper to call the LLM and normalize model-side error payloads.
@@ -86,6 +90,9 @@ class BaseAgent(ABC):
             prompt=prompt,
             model_override=self._model_name,
             use_mcp_tools=use_mcp_tools,
+            tool_callback=tool_callback,
+            response_schema=response_schema,
+            system_instruction=system_instruction,
         )
         if parsed.get("error"):
             raise RuntimeError(parsed["error"])
@@ -99,6 +106,7 @@ class BaseAgent(ABC):
         bullets: Optional[List[str]] = None,
         actions: Optional[List[Dict[str, Any]]] = None,
         model_info: Optional[Dict[str, str]] = None,
+        latency_ms: float = 0.0,
     ) -> AidaanMessageResponse:
         """
         Create a standardized message response for all agents.
@@ -109,6 +117,7 @@ class BaseAgent(ABC):
             actions=actions or [],
             conversation_id=conversation_id,
             model=model_info or self.get_model_info(),
+            latency_ms=latency_ms,
         )
 
     def build_error_response(

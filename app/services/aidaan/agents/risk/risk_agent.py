@@ -43,7 +43,8 @@ class RiskAgent(BaseAgent):
         self, 
         text: str, 
         conversation_id: str, 
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        tool_callback: Optional[callable] = None,
     ) -> AidaanMessageResponse:
         """
         Processes risk-related queries by fetching context from the RAG provider.

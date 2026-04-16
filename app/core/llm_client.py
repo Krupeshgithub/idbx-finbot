@@ -56,6 +56,8 @@ class LLMClient:
             "generate_json_sync": 0,
             "generate_text": 0,
         }
+        self._mcp_session = None
+        self._mcp_exit_stack = None
 
         self._configure_vertex_auth()
         self._ensure_client()
@@ -173,54 +175,67 @@ class LLMClient:
             ),
         )
 
-    async def _ensure_mcp_tools(self):
+    async def _ensure_mcp_session(self):
         """
-        Connect to the MCP server, fetch tools, and cache them.
+        Connect to the MCP server and maintain a long-lived session.
         """
-        if self._mcp_tools:
-            return self._mcp_tools
+        if self._mcp_session:
+            return self._mcp_session
 
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
+            from contextlib import AsyncExitStack
 
+            self._mcp_exit_stack = AsyncExitStack()
             server_params = StdioServerParameters(
                 command=settings.MCP_SERVER_COMMAND,
                 args=[settings.MCP_SERVER_ARGS],
             )
 
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools_resp = await session.list_tools()
-                    self._mcp_tools = tools_resp.tools
-                    logger.info(
-                        "[LLMClient] Discovered %s tools via MCP.",
-                        len(self._mcp_tools),
-                    )
-                    return self._mcp_tools
+            # Initialize stdio transport and session
+            read, write = await self._mcp_exit_stack.enter_async_context(stdio_client(server_params))
+            session = await self._mcp_exit_stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            
+            self._mcp_session = session
+            logger.info("[LLMClient] Persistent MCP session initialized.")
+            return self._mcp_session
+        except Exception as exc:
+            logger.error("[LLMClient] Failed to initialize persistent MCP session: %s", exc)
+            return None
+
+    async def _ensure_mcp_tools(self):
+        """
+        Fetch tools via the persistent session.
+        """
+        if self._mcp_tools:
+            return self._mcp_tools
+
+        session = await self._ensure_mcp_session()
+        if not session:
+            return []
+
+        try:
+            tools_resp = await session.list_tools()
+            self._mcp_tools = tools_resp.tools
+            logger.info("[LLMClient] Discovered %s tools via persistent MCP.", len(self._mcp_tools))
+            return self._mcp_tools
         except Exception as exc:
             logger.error("[LLMClient] MCP tool discovery failed: %s", exc)
             return []
 
     async def _execute_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """
-        Execute a specific tool via the MCP server.
+        Execute a specific tool via the long-lived MCP session.
         """
+        session = await self._ensure_mcp_session()
+        if not session:
+            return {"error": "MCP session not available."}
+
         try:
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
-
-            server_params = StdioServerParameters(
-                command=settings.MCP_SERVER_COMMAND,
-                args=[settings.MCP_SERVER_ARGS],
-            )
-
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool(name, arguments)
-                    return self._normalize_mcp_result(result.content)
+            result = await session.call_tool(name, arguments)
+            return self._normalize_mcp_result(result.content)
         except Exception as exc:
             logger.error("[LLMClient] MCP tool execution failed (%s): %s", name, exc)
             return {"error": f"Error executing tool '{name}': {exc}"}
@@ -278,34 +293,47 @@ class LLMClient:
     def get_reasoning_model_name(self) -> str:
         return self._reasoning_model_name
 
-    def _build_json_config(self) -> types.GenerateContentConfig:
+    def _build_json_config(self, schema: Optional[Any] = None, system_instruction: Optional[str] = None) -> types.GenerateContentConfig:
         return types.GenerateContentConfig(
             temperature=settings.VERTEX_AI_TEMPERATURE,
             max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
             response_mime_type="application/json",
-            tools=self._build_vertex_server_tools(),
+            response_json_schema=schema,
+            system_instruction=system_instruction,
+            # Controlled generation (JSON mode) is incompatible with Search tool on Vertex
+            tools=self._build_vertex_server_tools(exclude_server_tools=True),
         )
 
-    def _build_text_config(self) -> types.GenerateContentConfig:
+    def _build_text_config(self, system_instruction: Optional[str] = None) -> types.GenerateContentConfig:
         return types.GenerateContentConfig(
             temperature=settings.VERTEX_AI_TEMPERATURE,
             max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
+            system_instruction=system_instruction,
             tools=self._build_vertex_server_tools(),
         )
 
-    def _build_vertex_server_tools(self) -> List[Dict[str, Dict[str, Any]]]:
+    def _build_vertex_server_tools(
+        self, exclude_server_tools: bool = False
+    ) -> List[Any]:
         """
         Optional Vertex-managed server tools.
-        They stay disabled by default so local behavior remains predictable.
+        Returns a list containing at most one tool to avoid API conflicts.
         """
-        tools: List[Dict[str, Dict[str, Any]]] = []
+        if exclude_server_tools:
+            return []
+
+        # Priority selection for Google-managed server tools
         if settings.VERTEX_AI_ENABLE_GOOGLE_SEARCH:
-            tools.append({"google_search": {}})
+            # Vertex AI REQUIRES the 'google_search' key, NOT 'google_search_retrieval'
+            return [{"google_search": {}}]
+        
         if settings.VERTEX_AI_ENABLE_URL_CONTEXT:
-            tools.append({"url_context": {}})
+            return [{"url_context": {}}]
+            
         if settings.VERTEX_AI_ENABLE_CODE_EXECUTION:
-            tools.append({"code_execution": {}})
-        return tools
+            return [types.Tool(code_execution=types.CodeExecution())]
+            
+        return []
 
     def _clean_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -351,10 +379,17 @@ class LLMClient:
         return cleaned
 
     def _extract_json(self, raw_text: str) -> Dict[str, Any]:
+        if not raw_text or not raw_text.strip():
+            raise ValueError("Empty or whitespace text provided for JSON extraction")
+
         clean = re.sub(r"```(?:json)?", "", raw_text).replace("```", "").strip()
         match = re.search(r"\{.*\}", clean, re.DOTALL)
         payload = match.group(0) if match else clean
-        return json.loads(payload)
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as exc:
+            logger.error("[LLMClient] JSON parsing failed for payload: %s", payload[:200])
+            raise exc
 
     async def generate_json(
         self,
@@ -362,23 +397,40 @@ class LLMClient:
         model_override: Optional[str] = None,
         retries: int = 2,
         use_mcp_tools: bool = False,
+        tool_callback: Optional[callable] = None,
+        response_schema: Optional[Any] = None,
+        system_instruction: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON using Vertex AI.
+        Uses Hybrid Mode (Text + JSON Instructions) when tools are enabled to bypass Vertex API conflicts.
         """
         model_name = model_override or self._default_model_name
         cache_prefix = "json_tools" if use_mcp_tools else "json"
+        
+        # Determine if we need to bypass strict JSON mode due to tool availability
+        # On Vertex AI, Search tools are incompatible with response_mime_type="application/json"
+        has_server_tools = bool(self._build_vertex_server_tools())
+        use_hybrid_mode = use_mcp_tools or has_server_tools
+
         cache_key = self._cache_key(cache_prefix, model_name, prompt)
         cached_result = cache.get(cache_key)
         if cached_result is not None:
             self._log_usage("generate_json", prompt, cached=True)
             return cached_result
 
+        # Helper: add JSON instruction for non-strict calls
+        if use_hybrid_mode and "Return ONLY raw JSON" not in prompt:
+            prompt += "\n\nCRITICAL: Return ONLY raw JSON. No conversational filler or markdown blocks."
+
         if use_mcp_tools:
             result = await self._generate_json_with_mcp_tools(
                 prompt=prompt,
                 model_name=model_name,
                 retries=retries,
+                tool_callback=tool_callback,
+                response_schema=response_schema,
+                system_instruction=system_instruction,
             )
             cache.set(cache_key, result, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_json", prompt)
@@ -390,13 +442,16 @@ class LLMClient:
         if client is None:
             return self._vertex_error_payload()
 
+        # Choose config: Hybrid/Text config if search is enabled, else strict JSON config
+        config = self._build_text_config(system_instruction=system_instruction) if use_hybrid_mode else self._build_json_config(schema=response_schema, system_instruction=system_instruction)
+
         for attempt in range(retries):
             try:
                 response = await self._run_generate_content(
                     client=client,
                     model=model_name,
                     contents=prompt,
-                    config=self._build_json_config(),
+                    config=config,
                 )
                 raw = (response.text or "").strip()
                 parsed = self._extract_json(raw)
@@ -404,7 +459,8 @@ class LLMClient:
                 self._log_usage("generate_json", prompt)
                 latency_ms = int((time.monotonic() - start) * 1000)
                 logger.debug(
-                    "[LLMClient] generate_json OK | model=%s | latency=%sms",
+                    "[LLMClient] generate_json OK | mode=%s | model=%s | latency=%sms",
+                    "hybrid" if use_hybrid_mode else "strict",
                     model_name,
                     latency_ms,
                 )
@@ -428,6 +484,9 @@ class LLMClient:
         prompt: str,
         model_name: str,
         retries: int,
+        tool_callback: Optional[callable] = None,
+        response_schema: Optional[Any] = None,
+        system_instruction: Optional[str] = None,
     ) -> Dict[str, Any]:
         mcp_tools = await self._ensure_mcp_tools()
         if not mcp_tools:
@@ -447,12 +506,13 @@ class LLMClient:
                 )
             )
 
+        # PRIORITY FIX: We avoid mixing built-in server tools (search, etc.) with 
+        # custom function declarations, as the API often rejects multiple tool types 
+        # unless they are all search tools.
         tool_config = types.GenerateContentConfig(
             temperature=settings.VERTEX_AI_TEMPERATURE,
             max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
-            tools=self._build_vertex_server_tools() + [
-                types.Tool(function_declarations=declarations)
-            ],
+            tools=[types.Tool(function_declarations=declarations)],
         )
 
         user_prompt_content = types.Content(
@@ -465,6 +525,9 @@ class LLMClient:
         for attempt in range(retries):
             contents = [user_prompt_content]
             try:
+                # Update tool_config with system_instruction before initial turn
+                tool_config.system_instruction = system_instruction
+
                 response = await self._run_generate_content(
                     client=client,
                     model=model_name,
@@ -479,30 +542,50 @@ class LLMClient:
                     function_call_content = response.candidates[0].content
                     contents.append(function_call_content)
 
-                    tool_parts = []
+                    # PARALLEL EXECUTION: Fire all tool calls suggested in this turn at once.
+                    tasks = []
                     for function_call in response.function_calls:
                         tool_name = function_call.name
                         tool_args = dict(function_call.args or {})
                         logger.info(
-                            "[LLMClient] [%s/%s] Model requested MCP tool: %s",
+                            "[LLMClient] [%s/%s] Executing tool (Parallel): %s",
                             turn,
                             max_turns,
                             tool_name,
                         )
-                        tool_result = await self._execute_mcp_tool(tool_name, tool_args)
+                        if tool_callback:
+                            await tool_callback(tool_name)
+                        tasks.append(self._execute_mcp_tool(tool_name, tool_args))
+
+                    results = await asyncio.gather(*tasks)
+
+                    tool_parts = []
+                    for function_call, tool_result in zip(response.function_calls, results):
                         tool_parts.append(
                             types.Part.from_function_response(
-                                name=tool_name,
+                                name=function_call.name,
                                 response={"result": tool_result},
                             )
                         )
 
-                    contents.append(types.Content(role="tool", parts=tool_parts))
+                    # Handle system_instruction within tool_config if needed
+                    tool_config.system_instruction = system_instruction
+
                     response = await self._run_generate_content(
                         client=client,
                         model=model_name,
                         contents=contents,
                         config=tool_config,
+                    )
+
+                # Final Synthesis Turn override logic:
+                if not response.function_calls and response_schema:
+                    config = self._build_json_config(schema=response_schema, system_instruction=system_instruction)
+                    response = await self._run_generate_content(
+                        client=client,
+                        model=model_name,
+                        contents=contents,
+                        config=config,
                     )
 
                 raw = (response.text or "").strip()

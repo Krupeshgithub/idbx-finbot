@@ -45,6 +45,7 @@ class AidaanMessageResponse(BaseModel):
     conversation_id: str
     guardrails: List[str] = Field(default_factory=lambda: ["zero_auto_execution"])
     model: ModelInfo
+    latency_ms: float = 0.0
 
 
 class ToolInvokeRequest(BaseModel):

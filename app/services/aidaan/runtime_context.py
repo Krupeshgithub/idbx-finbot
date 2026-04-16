@@ -80,6 +80,16 @@ class RuntimeContextService:
         conversation_id: Optional[str],
         username: Optional[str],
     ) -> str:
+        # Optimization: Skip expensive context building for extremely simple/short queries
+        # unless it's the very first message.
+        # Optimization: Only skip full context if the query is extremely short AND not history-related.
+        # This ensures 'Last question?' or 'Yesterday's tasks' still get memory.
+        lowered = base_prompt.lower()
+        is_history_query = any(k in lowered for k in ["last", "previous", "earlier", "history", "yesterday", "remember", "context"])
+        
+        if len(base_prompt.strip().split()) <= 2 and not is_history_query:
+            return base_prompt
+
         history = self.get_recent_history(conversation_id)
         operational = self.get_operational_context(
             username=username,

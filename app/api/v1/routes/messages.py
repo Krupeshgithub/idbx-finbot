@@ -1,17 +1,22 @@
 """
 REST conversation route for AIDAAN.
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.schemas.aidaan import AidaanMessageRequest, AidaanMessageResponse
 from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
+from app.schemas.auth import UserContext
+from app.api.deps import get_current_user
 from app.services.persistence import persistence_service
 
 router = APIRouter()
 
 
 @router.post("/aidaan/message", response_model=AidaanMessageResponse)
-async def create_message(payload: AidaanMessageRequest) -> AidaanMessageResponse:
+async def create_message(
+    payload: AidaanMessageRequest,
+    current_user: UserContext = Depends(get_current_user)
+) -> AidaanMessageResponse:
     context = dict(payload.context or {})
     context.setdefault("username", payload.user_id)
     response = await coordinator_agent.handle_message(

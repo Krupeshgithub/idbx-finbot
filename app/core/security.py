@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from jose import jwt
 
 from passlib.context import CryptContext
+from app.core.config.settings import settings
 
 
 pwd_context = CryptContext(
@@ -15,7 +16,7 @@ pwd_context = CryptContext(
 )
 
 # Configuration
-SECRET_KEY = "secret-key"
+SECRET_KEY = settings.JWT_SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 
 

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     Sensitive keys (API keys, project IDs) are loaded from .env.
     """
 
+    # --- Project JWT ---
+    JWT_SECRET_KEY: str = "change-me-in-production"
+
     # --- Project Metadata ---
     PROJECT_NAME: str = "AIDANN-Backend"
     VERSION: str = "1.0.0"

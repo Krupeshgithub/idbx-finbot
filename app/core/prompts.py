@@ -126,14 +126,13 @@ class Prompts:
     Categories:
     1. "market"      - Anything about stock prices, quotes, company performance, historical data,
                     tickers, company names (Apple, HDFC, Nvidia etc), indices, charts, OHLCV,
-                    earnings, market cap, volume, intraday/daily/weekly data.
-                    Examples: "NVDA", "Apple price", "How is Tesla doing?", "HDFC Bank",
-                                "Show me Google's chart", "What was Microsoft last week?"
+                    earnings, market cap, volume, news sentiment, technical indicators (RSI, moving averages, SMA, EMA),
+                    financial statements (revenue, net income).
+                    Examples: "Analyze NVDA", "Apple news sentiment", "AAPL RSI and SMA trend", "Compare Google revenue with price"
 
-    2. "risk"        - Desk risk checks, pre-trade risk, sentiment analysis, volatility assessment,
-                    limit checks, compliance checks.
-                    Examples: "Check my desk risk", "What's market sentiment?",
-                                "Am I within limits?", "Check status"
+    2. "risk"        - Desk risk checks, pre-trade risk, limit checks, compliance checks,
+                    notional limits, DV01/PV01 calculated for current portfolio.
+                    Examples: "Check my desk risk", "Am I within limits?"
 
     3. "distributor" - Liquidity discovery, RFQ distribution, trade funding, matching,
                     finding counterparties.
@@ -308,8 +307,8 @@ class Prompts:
 
     COORDINATOR_ROUTER = """
     Classify this trading desk request into exactly one category:
-    1. "market" - Macro analysis, stocks, commodities, FX rates.
-    2. "risk" - PV01/DV01, sentiment, compliance.
+    1. "market" - Macro analysis, stocks, news sentiment, financial statements, technical indicators (RSI, SMA, MACD).
+    2. "risk" - PV01/DV01, desk limit checks, portfolio compliance.
     3. "order" - RFQ staging, trade execution, parsing parameters.
     4. "greeting" - Hellos and general status.
     5. "context" - Conversation history, desk profile, RFQ history, counterparties, user context.

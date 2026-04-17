@@ -110,22 +110,30 @@ class MarketAgent(BaseAgent):
                  )
 
         try:
+            # Determine if this is a deep-dive query (requires higher accuracy/reasoning)
+            deep_dive_keywords = ["analyze", "identify", "compare", "justify", "evaluate", "trend", "phase", "overbought", "oversold"]
+            is_deep_dive = any(k in text.lower() for k in deep_dive_keywords)
+            model_name = settings.VERTEX_AI_REASONING_MODEL_NAME if is_deep_dive else self._model_name
+            
+            logger.info(f"[MarketAgent] Routing to model: {model_name} (Deep-Dive: {is_deep_dive})")
+
             # Execute agentic loop with tool discovery enabled
             response_data = await self.generate_json_response(
                 orchestration_prompt,
                 conversation_id=conversation_id,
+                model_override=model_name,
                 username=context.get("username"),
                 use_mcp_tools=True,
                 tool_callback=tool_callback,
                 response_schema=Prompts.STANDARD_RESPONSE_SCHEMA,
-                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Senior Interbank analyst. You MUST respond with exactly the 4 parts requested in the schema."
+                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Senior Interbank analyst. You MUST gather all relevant financial metrics (OHLCV, Fundamentals, Technicals, News) before providing a final synthesis. Use clean tables."
             )
             
             return self.build_message_response(
                 reply=response_data.get("reply", "Market data analysis complete."),
                 bullets=response_data.get("bullets", []),
                 conversation_id=conversation_id,
-                model_info=self.get_model_info(),
+                model_info=self.get_model_info(model_override=model_name),
             )
         except Exception as e:
             return self.build_error_response(

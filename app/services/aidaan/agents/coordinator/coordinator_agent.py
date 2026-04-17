@@ -120,21 +120,31 @@ class CoordinatorAgent(BaseAgent):
         """
         lowered = text.lower()
         
-        # --- Heuristics (Token Saving / High Speed) ---
-        if any(k in lowered for k in ["hi", "hello", "good morning", "hey", "greeting"]):
-            return "greeting"
-        
-        # Comprehensive Market Keywords (Stocks, Indices, Commodities, Financials)
+        # --- 1. Comprehensive Market & Risk Priority (Longer queries) ---
         market_keywords = [
             "price", "market", "gold", "oil", "inflation", "gdp", "apple", "google", "meta", "tesla", 
             "microsoft", "amazon", "nvidia", "aapl", "goog", "msft", "tsla", "nvda", "index", "sp500", 
             "nasdaq", "dow", "ftse", "dax", "nifty", "dividend", "yield", "earnings", "eps", "pe ratio", 
-            "revenue", "balance sheet", "income statement", "cash flow", "commodity", "crude", "silver"
+            "revenue", "balance sheet", "income statement", "cash flow", "commodity", "crude", "silver", "news", "sentiment"
         ]
+        risk_keywords = ["risk", "dv01", "pv01", "limit", "exposure", "var", "stress", "compliance"]
+        
+        # If query is substantial, check market/risk keywords first to avoid false-positive greeting triggers
+        if len(lowered.split()) > 3:
+            if any(k in lowered for k in market_keywords):
+                return "market"
+            if any(k in lowered for k in risk_keywords):
+                return "risk"
+
+        # --- 2. Heuristics (Token Saving / High Speed) ---
+        if any(k in lowered for k in ["hi", "hello", "good morning", "hey", "greeting"]):
+            return "greeting"
+        
+        # fallback keywords for short queries
         if any(k in lowered for k in market_keywords):
             return "market"
             
-        if any(k in lowered for k in ["risk", "dv01", "pv01", "limit", "exposure", "var", "stress"]):
+        if any(k in lowered for k in risk_keywords):
             return "risk"
             
         if any(k in lowered for k in ["stage", "rfq", "buy", "sell", "sonia", "sofr", "order", "execution", "quote"]):

@@ -60,10 +60,10 @@ class BaseAgent(ABC):
         """
         pass
 
-    def get_model_info(self) -> Dict[str, str]:
+    def get_model_info(self, model_override: Optional[str] = None) -> Dict[str, str]:
         return {
             "agent": self.name,
-            "llm": self._model_name or settings.VERTEX_AI_MODEL_NAME
+            "llm": model_override or self._model_name or settings.VERTEX_AI_MODEL_NAME
         }
 
     async def generate_json_response(
@@ -71,6 +71,7 @@ class BaseAgent(ABC):
         prompt: str,
         *,
         conversation_id: Optional[str] = None,
+        model_override: Optional[str] = None,
         username: Optional[str] = None,
         use_mcp_tools: bool = False,
         tool_callback: Optional[callable] = None,
@@ -88,7 +89,7 @@ class BaseAgent(ABC):
             )
         parsed = await self.llm.generate_json(
             prompt=prompt,
-            model_override=self._model_name,
+            model_override=model_override or self._model_name,
             use_mcp_tools=use_mcp_tools,
             tool_callback=tool_callback,
             response_schema=response_schema,

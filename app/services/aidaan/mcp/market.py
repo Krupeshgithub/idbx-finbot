@@ -357,18 +357,30 @@ async def get_technical_indicator(
     function: str,
     symbol: str,
     interval: str = "daily",
-    time_period: int = 14
+    time_period: Optional[int] = 14,
+    **kwargs
 ) -> Dict[str, Any]:
     """
-    Get technical indicators (RSI, SMA, EMA, MACD, etc)
+    Get professional technical indicators from Alpha Vantage.
+    
+    Supported functions: SMA, EMA, WMA, RSI, MACD, STOCH, BBANDS, ADX, etc.
+    Advanced params (passed via kwargs):
+    - MACD: fastperiod=12, slowperiod=26, signalperiod=9
+    - BBANDS: nbdevup=2, nbdevdn=2, matype=0
+    - Performance: series_type=close (standard)
     """
     params = {
         "function": function,
-        "symbol": symbol,
+        "symbol": symbol.upper(),
         "interval": interval,
-        "time_period": time_period,
-        "series_type": "close"
     }
+    if time_period:
+        params["time_period"] = time_period
+    
+    if "series_type" not in kwargs:
+        params["series_type"] = "close"
+        
+    params.update(kwargs)
     return await _fetch_av(params)
 
 

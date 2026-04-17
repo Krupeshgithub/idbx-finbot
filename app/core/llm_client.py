@@ -521,10 +521,13 @@ class LLMClient:
                     exc,
                 )
                 if attempt < retries - 1:
-                    await asyncio.sleep(1)
-
-        logger.error("[LLMClient] generate_json exhausted retries: %s", last_error)
-        return {"error": str(last_error) if last_error else "Vertex AI JSON generation failed"}
+                    # Exponential Backoff with Jitter
+                    delay = (2 ** attempt) + (time.time() % 1)
+                    logger.info("[LLMClient] Retrying generate_json in %0.2fs due to: %s", delay, exc)
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error("[LLMClient] generate_json exhausted retries: %s", last_error)
+                    return {"error": str(last_error) if last_error else "Vertex AI JSON generation failed"}
 
     async def _generate_json_with_mcp_tools(
         self,
@@ -582,7 +585,7 @@ class LLMClient:
                     config=tool_config,
                 )
 
-                max_turns = 5
+                max_turns = 8 # Increased turn limit for complex deep-dives
                 turn = 0
                 while response.function_calls and turn < max_turns:
                     turn += 1
@@ -604,6 +607,7 @@ class LLMClient:
                             await tool_callback(tool_name)
                         tasks.append(self._execute_mcp_tool(tool_name, tool_args))
 
+                    # Increase concurrency monitoring
                     results = await asyncio.gather(*tasks)
 
                     tool_parts = []
@@ -651,14 +655,18 @@ class LLMClient:
                 return parsed
             except Exception as exc:
                 last_error = exc
+                is_429 = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
                 logger.warning(
-                    "[LLMClient] MCP tool loop failed (attempt %s/%s): %s",
+                    "[LLMClient] MCP tool loop failed (attempt %s/%s) | is_429=%s: %s",
                     attempt + 1,
                     retries,
+                    is_429,
                     exc,
                 )
                 if attempt < retries - 1:
-                    await asyncio.sleep(1)
+                    # Exponential backoff for tool loops
+                    delay = (2 ** attempt) + (time.time() % 1)
+                    await asyncio.sleep(delay)
 
         return {"error": str(last_error) if last_error else "Vertex AI tool loop failed"}
 

@@ -319,7 +319,13 @@ class Prompts:
     5. "context" - Conversation history, desk profile, RFQ history, counterparties, user context.
 
     Request: "{text}"
-    Return JSON: {{"intent": "category"}}
+    Return ONLY raw JSON matching this schema:
+    {{
+      "intent": "market|risk|order|greeting|context",
+      "confidence": 0.0,
+      "entities": {{}},
+      "reason": "one-line desk justification"
+    }}
     """
 
     ORDER_PARSER = """You are an institutional trade parser. 

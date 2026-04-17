@@ -12,10 +12,11 @@ Key Features:
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from app.services.aidaan.core.base import BaseAgent
-from app.schemas.aidaan import AidaanMessageResponse
+from app.schemas.aidaan import ActionItem, AidaanMessageResponse
 from app.core.prompts import Prompts
 from app.core.config.settings import settings
 
@@ -33,6 +34,73 @@ class OrderAgent(BaseAgent):
         Initialize with a model optimized for high-fidelity extraction.
         """
         super().__init__(name="order", model_name=settings.VERTEX_AI_MODEL_NAME)
+
+    def _parse_notional(self, text: str) -> Optional[float]:
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(bn|b|m|mm|million|billion)?\b", text.lower())
+        if not match:
+            return None
+        value = float(match.group(1))
+        unit = (match.group(2) or "").lower()
+        if unit in {"bn", "b", "billion"}:
+            return value * 1_000_000_000
+        if unit in {"m", "mm", "million"}:
+            return value * 1_000_000
+        return value
+
+    def _parse_tenor(self, text: str) -> Optional[str]:
+        match = re.search(r"\b(\d+)\s*(y|yr|year|years|m|mo|month|months)\b", text.lower())
+        if not match:
+            match = re.search(r"\b(\d+)(y|m)\b", text.lower())
+        if not match:
+            return None
+        qty = match.group(1)
+        unit = match.group(2).lower()
+        if unit in {"y", "yr", "year", "years"}:
+            return f"{qty}Y"
+        return f"{qty}M"
+
+    def _parse_instrument(self, text: str) -> str:
+        lowered = text.lower()
+        if "sonia" in lowered:
+            return "SONIA"
+        if "sofr" in lowered:
+            return "SOFR"
+        if "gbp/usd" in lowered or "cable" in lowered:
+            return "GBP/USD"
+        if "eur/usd" in lowered:
+            return "EUR/USD"
+        if "gilt" in lowered:
+            return "UK Gilts"
+        if "bond" in lowered:
+            return "Bond"
+        if "fx" in lowered:
+            return "FX"
+        return "Swap"
+
+    def _parse_settlement(self, text: str) -> Optional[str]:
+        lowered = text.lower()
+        if "imm" in lowered:
+            return "IMM"
+        if "t+2" in lowered:
+            return "T+2"
+        if "spot" in lowered:
+            return "Spot"
+        return None
+
+    def _fallback_parse(self, text: str) -> Dict[str, Any]:
+        instrument = self._parse_instrument(text)
+        size = self._parse_notional(text) or 0.0
+        tenor = self._parse_tenor(text) or "Market"
+        settlement = self._parse_settlement(text) or "Spot/T+2"
+        lowered = text.lower()
+        action = "stage_rfq" if any(k in lowered for k in ["stage", "rfq", "draft"]) else "unknown"
+        return {
+            "instrument": instrument,
+            "size": size,
+            "tenor": tenor,
+            "settlement": settlement,
+            "action": action,
+        }
 
     async def handle_message(
         self, 
@@ -64,13 +132,15 @@ class OrderAgent(BaseAgent):
                 conversation_id=conversation_id,
                 username=context.get("username"),
             )
+            if parsed.get("error"):
+                raise RuntimeError(parsed["error"])
             
             instrument = parsed.get("instrument", "Unknown Asset")
             size = parsed.get("size", 0)
             tenor = parsed.get("tenor", "Market")
             settlement = parsed.get("settlement", "Spot/T+2")
             
-            reply = f"I've identified an institutional request for **{instrument}**. Preparing the staging ticket..."
+            reply = f"I've identified an institutional request for {instrument}. Preparing the staging ticket..."
             bullets = [
                 f"Instrument: {instrument}",
                 f"Notional: {size:,} (Base Units)",
@@ -78,20 +148,70 @@ class OrderAgent(BaseAgent):
                 f"Settlement: {settlement}",
                 "Status: STANDBY FOR STAGING"
             ]
+
+            actions = [
+                ActionItem(
+                    kind="invoke_tool",
+                    title="Draft RFQ Ticket",
+                    payload={
+                        "tool_name": "draft_rfq_ticket",
+                        "arguments": {
+                            "conversation_id": conversation_id,
+                            "instrument": instrument,
+                            "notional": size,
+                            "tenor": tenor,
+                            "settlement": settlement,
+                        },
+                    },
+                    requires_human_confirm=True,
+                )
+            ]
             
             return self.build_message_response(
                 reply=reply,
                 bullets=bullets,
+                actions=actions,
                 conversation_id=conversation_id,
                 model_info=self.get_model_info(),
             )
         except Exception as e:
-            return self.build_error_response(
-                reply="I couldn't identify the exact trade parameters (Size, Tenor, or Instrument).",
+            parsed = self._fallback_parse(text)
+            instrument = parsed["instrument"]
+            size = parsed["size"]
+            tenor = parsed["tenor"]
+            settlement = parsed["settlement"]
+            reply = f"(Deterministic Mode) Drafting an RFQ ticket for {instrument}."
+            bullets = [
+                f"Instrument: {instrument}",
+                f"Notional: {int(size):,} (Base Units)" if size else "Notional: (missing)",
+                f"Tenor: {tenor}",
+                f"Settlement: {settlement}",
+                "Status: STANDBY FOR STAGING",
+            ]
+            actions = [
+                ActionItem(
+                    kind="invoke_tool",
+                    title="Draft RFQ Ticket",
+                    payload={
+                        "tool_name": "draft_rfq_ticket",
+                        "arguments": {
+                            "conversation_id": conversation_id,
+                            "instrument": instrument,
+                            "notional": size,
+                            "tenor": tenor,
+                            "settlement": settlement,
+                        },
+                    },
+                    requires_human_confirm=True,
+                )
+            ]
+            logger.warning("[OrderAgent] LLM parse failed; using fallback parser: %s", e)
+            return self.build_message_response(
+                reply=reply,
+                bullets=bullets,
+                actions=actions,
                 conversation_id=conversation_id,
-                error=e,
-                bullets=["NLP Error: Insufficient parameters extracted"],
-                model_info=self.get_model_info(),
+                model_info={"agent": self.name, "llm": "fallback-parser"},
             )
 
     def get_capabilities(self) -> List[str]:

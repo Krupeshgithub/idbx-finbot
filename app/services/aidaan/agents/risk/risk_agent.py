@@ -92,12 +92,27 @@ class RiskAgent(BaseAgent):
                 model_info=self.get_model_info(),
             )
         except Exception as e:
-            return self.build_error_response(
-                reply="I'm unable to calculate precise risk metrics currently. Please verify your desk connection.",
+            logger.warning("[RiskAgent] LLM synthesis failed; using deterministic formatting: %s", e)
+            dv01 = metrics.get("dv01")
+            pv01 = metrics.get("pv01")
+            var_99 = metrics.get("var_99")
+            limits = metrics.get("limits", {})
+            reply = (
+                "[Direct Answer] Risk snapshot assembled from desk metrics.\n"
+                "[Context Detail] Use the figures below for pre-trade validation (no auto-execution)."
+            )
+            bullets = [
+                f"Instrument: {instrument}",
+                f"DV01: {dv01}" if dv01 is not None else "DV01: N/A",
+                f"PV01: {pv01}" if pv01 is not None else "PV01: N/A",
+                f"VaR(99%): {var_99}" if var_99 is not None else "VaR(99%): N/A",
+                f"Limit Used: {limits.get('used', 'N/A')} / {limits.get('max', 'N/A')}",
+            ]
+            return self.build_message_response(
+                reply=reply,
+                bullets=bullets,
                 conversation_id=conversation_id,
-                error=e,
-                bullets=[f"System Notice: {str(e)}"],
-                model_info=self.get_model_info(),
+                model_info={"agent": self.name, "llm": "fallback-template"},
             )
 
     def get_capabilities(self) -> List[str]:

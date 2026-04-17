@@ -5,6 +5,7 @@ Enables real-time visual state machine pulses and unified conversational flow.
 import asyncio
 import json
 import logging
+import time
 
 from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
 from app.services.persistence import persistence_service
@@ -28,9 +29,17 @@ async def aidaan_websocket(websocket: WebSocket):
     await websocket.accept()
 
     greeted = False
+    dormant_sent = False
     try:
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
+            except asyncio.TimeoutError:
+                if not dormant_sent:
+                    await websocket.send_json({"type": "state", "state": "Dormant"})
+                    dormant_sent = True
+                continue
+
             message = json.loads(data)
 
             # Intent Processing (Unified with REST)
@@ -43,6 +52,21 @@ async def aidaan_websocket(websocket: WebSocket):
             )
             context = dict(message.get("context", {}) or {})
             context.setdefault("username", user_id)
+
+            # Proximity signals drive the Awakening/Dormant states client-side.
+            if msg_type == "proximity":
+                distance_px = message.get("distance_px")
+                try:
+                    distance_val = float(distance_px) if distance_px is not None else None
+                except Exception:
+                    distance_val = None
+                if distance_val is not None and distance_val <= 64.0:
+                    await websocket.send_json({"type": "state", "state": "Awakening", "detail": "Trader proximity detected."})
+                    dormant_sent = False
+                else:
+                    await websocket.send_json({"type": "state", "state": "Dormant"})
+                    dormant_sent = True
+                continue
 
             # If it's an 'init' message, we force a greeting only on the FIRST instance
             if msg_type == "init" and not user_text and not greeted:
@@ -97,11 +121,17 @@ async def aidaan_websocket(websocket: WebSocket):
                         context=context,
                     )
 
+                    # Optional alert signal for risk breaches / urgent desk events
+                    lowered = (response.reply or "").lower()
+                    if response.model.agent == "risk" and any(k in lowered for k in ["breach", "limit", "urgent", "kill switch"]):
+                        await websocket.send_json({"type": "state", "state": "Alert/Busy", "detail": "Risk alert condition detected."})
+
                     # Stream Final Result
                     await websocket.send_json({
                         "type": "chat_reply",
                         "payload": response.model_dump()
                     })
+                    dormant_sent = False
                 except Exception as inner_e:
                     logger.error(f"Agent Processing Error: {inner_e}")
                     await websocket.send_json({
@@ -113,10 +143,7 @@ async def aidaan_websocket(websocket: WebSocket):
                         }
                     })
 
-            await websocket.send_json({
-                "type": "state",
-                "state": "Dormant"
-            })
+            # Do not force Dormant immediately; idle timeout will handle it.
 
     except WebSocketDisconnect:
         pass

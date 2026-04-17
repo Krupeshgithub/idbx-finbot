@@ -33,7 +33,9 @@ def build_database_url() -> str:
         password = settings.ALLOYDB_PASSWORD
         return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
 
-    return "postgresql+psycopg2://aidann_app:aidann_dev_password@postgres:5432/aidann"
+    # Open-source/dev default: zero-dependency local SQLite.
+    # Docker deployments should set DATABASE_URL explicitly (e.g., postgres service).
+    return "sqlite:///./aidann.db"
 
 
 def get_database_config() -> DatabaseConfig:
@@ -43,4 +45,3 @@ def get_database_config() -> DatabaseConfig:
         alloydb_enabled=settings.ALLOYDB_ENABLED,
         alloydb_instance_uri=settings.ALLOYDB_INSTANCE_URI or None,
     )
-

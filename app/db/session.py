@@ -16,11 +16,17 @@ logger = logging.getLogger(__name__)
 
 db_config = get_database_config()
 
+connect_args = {}
+if db_config.url.startswith("sqlite:"):
+    # Keep SQLite responsive even under accidental concurrent access during demos/tests.
+    connect_args = {"check_same_thread": False, "timeout": 1.0}
+
 engine = create_engine(
     db_config.url,
     echo=settings.DB_ECHO,
     future=True,
     pool_pre_ping=True,
+    connect_args=connect_args,
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -37,4 +43,3 @@ def get_db_session() -> Session:
         raise
     finally:
         session.close()
-

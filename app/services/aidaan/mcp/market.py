@@ -62,12 +62,12 @@ async def search_ticker(keywords: str) -> Dict[str, Any]:
     
     if "error" in data:
         # Fallback to simulation if rate limited
-        if "rate limit" in data["error"].lower():
+        if "rate limit" in data["error"].lower() or "not configured" in data["error"].lower():
             return {
                 "matches": [
                     {"symbol": keywords.upper(), "name": f"{keywords.upper()} Corp (Simulated)", "type": "Equity", "region": "United States"}
                 ],
-                "note": "SIMULATION MODE ACTIVE (API Limit Reached)"
+                "note": "SIMULATION MODE ACTIVE"
             }
         return data
         
@@ -95,7 +95,7 @@ async def get_stock_quote(symbol: str) -> Dict[str, Any]:
     })
     
     if "error" in data:
-        if "rate limit" in data["error"].lower():
+        if "rate limit" in data["error"].lower() or "not configured" in data["error"].lower():
             import random
             return {
                 "symbol": symbol.upper(),
@@ -125,8 +125,16 @@ async def get_daily_series(symbol: str, days: int = 10) -> Dict[str, Any]:
     Get daily historical stock prices (Open, High, Low, Close, Volume).
     Use 'days' to specify how many recent days of data to return.
     """
+    raw = await _fetch_av(
+        {
+            "function": "TIME_SERIES_DAILY",
+            "symbol": symbol.upper(),
+            "outputsize": "compact",
+        }
+    )
+
     if "error" in raw:
-        if "rate limit" in raw["error"].lower():
+        if "rate limit" in raw["error"].lower() or "not configured" in raw["error"].lower():
             import datetime
             today = datetime.date.today()
             sim_data = []
@@ -148,7 +156,7 @@ async def get_daily_series(symbol: str, days: int = 10) -> Dict[str, Any]:
     target_dates = sorted_dates[:days]
     
     return {
-        "symbol": symbol,
+        "symbol": symbol.upper(),
         "last_refreshed": raw.get("Meta Data", {}).get("3. Last Refreshed"),
         "data": [
             {
@@ -274,7 +282,10 @@ async def get_exchange_rate(
         "from_currency": from_currency, 
         "to_currency": to_currency
     })
-    rate = data.get("Raltime Currency Exchange Rate", {})
+    if "error" in data:
+        return data
+
+    rate = data.get("Realtime Currency Exchange Rate", {})
     if not rate:
         return {"error": "No FX data found"}
 

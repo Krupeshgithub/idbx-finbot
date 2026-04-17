@@ -20,6 +20,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import sys
 import time
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -58,6 +60,7 @@ class LLMClient:
         }
         self._mcp_session = None
         self._mcp_exit_stack = None
+        self._mcp_inprocess_server = None
 
         self._configure_vertex_auth()
         self._ensure_client()
@@ -179,6 +182,19 @@ class LLMClient:
         """
         Connect to the MCP server and maintain a long-lived session.
         """
+        if settings.MCP_TRANSPORT == "inprocess":
+            if self._mcp_inprocess_server is not None:
+                return self._mcp_inprocess_server
+            try:
+                from app.services.aidaan.mcp.market import mcp as market_mcp
+
+                self._mcp_inprocess_server = market_mcp
+                logger.info("[LLMClient] Using in-process MCP server.")
+                return self._mcp_inprocess_server
+            except Exception as exc:
+                logger.error("[LLMClient] In-process MCP server import failed: %s", exc)
+                return None
+
         if self._mcp_session:
             return self._mcp_session
 
@@ -188,9 +204,24 @@ class LLMClient:
             from contextlib import AsyncExitStack
 
             self._mcp_exit_stack = AsyncExitStack()
+            raw_args: Any = settings.MCP_SERVER_ARGS
+            if isinstance(raw_args, str):
+                mcp_args = shlex.split(raw_args) if raw_args.strip() else []
+            elif isinstance(raw_args, (list, tuple)):
+                mcp_args = [str(item) for item in raw_args]
+            else:
+                mcp_args = [str(raw_args)]
+
+            command = settings.MCP_SERVER_COMMAND
+            # Treat generic python launchers as "current interpreter" to keep MCP in the same venv/container.
+            if command in {"python", "python3"}:
+                command = sys.executable
+            if Path(command).name.startswith("python") and "-u" not in mcp_args:
+                mcp_args = ["-u", *mcp_args]
+
             server_params = StdioServerParameters(
-                command=settings.MCP_SERVER_COMMAND,
-                args=[settings.MCP_SERVER_ARGS],
+                command=command,
+                args=mcp_args,
             )
 
             # Initialize stdio transport and session
@@ -203,6 +234,13 @@ class LLMClient:
             return self._mcp_session
         except Exception as exc:
             logger.error("[LLMClient] Failed to initialize persistent MCP session: %s", exc)
+            if self._mcp_exit_stack is not None:
+                try:
+                    await self._mcp_exit_stack.aclose()
+                except Exception:
+                    pass
+            self._mcp_exit_stack = None
+            self._mcp_session = None
             return None
 
     async def _ensure_mcp_tools(self):
@@ -217,9 +255,12 @@ class LLMClient:
             return []
 
         try:
-            tools_resp = await session.list_tools()
-            self._mcp_tools = tools_resp.tools
-            logger.info("[LLMClient] Discovered %s tools via persistent MCP.", len(self._mcp_tools))
+            if settings.MCP_TRANSPORT == "inprocess":
+                self._mcp_tools = await session.list_tools()
+            else:
+                tools_resp = await session.list_tools()
+                self._mcp_tools = tools_resp.tools
+            logger.info("[LLMClient] Discovered %s tools via MCP (%s).", len(self._mcp_tools), settings.MCP_TRANSPORT)
             return self._mcp_tools
         except Exception as exc:
             logger.error("[LLMClient] MCP tool discovery failed: %s", exc)
@@ -234,6 +275,12 @@ class LLMClient:
             return {"error": "MCP session not available."}
 
         try:
+            if settings.MCP_TRANSPORT == "inprocess":
+                content, meta = await session.call_tool(name, arguments)
+                if isinstance(meta, dict) and isinstance(meta.get("result"), dict):
+                    return meta["result"]
+                return self._normalize_mcp_result(content)
+
             result = await session.call_tool(name, arguments)
             return self._normalize_mcp_result(result.content)
         except Exception as exc:
@@ -567,6 +614,8 @@ class LLMClient:
                                 response={"result": tool_result},
                             )
                         )
+
+                    contents.append(types.Content(role="tool", parts=tool_parts))
 
                     # Handle system_instruction within tool_config if needed
                     tool_config.system_instruction = system_instruction

@@ -22,7 +22,7 @@ In a high-stakes trading environment, transparency and reliability are paramount
 ### 2. Installation
 ```bash
 # Register the virtual environment
-source .venv/bin/bin/activate  # On Linux/macOS
+source .venv/bin/activate  # On Linux/macOS
 
 # Install institutional dependencies
 pip install -r requirements.txt
@@ -44,6 +44,8 @@ VERTEX_AI_SERVICE_ACCOUNT_JSON=
 VERTEX_AI_ENABLE_GOOGLE_SEARCH=false
 VERTEX_AI_ENABLE_URL_CONTEXT=false
 VERTEX_AI_ENABLE_CODE_EXECUTION=false
+DATABASE_URL=sqlite:///./aidann.db
+MCP_TRANSPORT=inprocess
 ```
 
 Notes:
@@ -59,6 +61,15 @@ Notes:
 uvicorn asgi:app --reload
 ```
 The server will start at `http://localhost:8000`.
+
+Useful dev checks:
+- `GET /health`
+- `GET /v1/diagnostics/config` (Vertex + MCP + cache status)
+
+Local smoke evaluation (no Vertex required):
+```bash
+DATABASE_URL=sqlite:///./aidann.db .venv/bin/python app/eval/smoke_eval.py
+```
 
 ### 5. Docker
 ```bash

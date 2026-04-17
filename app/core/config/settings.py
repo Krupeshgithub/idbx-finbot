@@ -4,6 +4,7 @@ Centralized Configuration for AIDAAN - Institutional Standard.
 This module handles all application settings using Pydantic-Settings.
 Configurations are loaded from environment variables or the local .env file.
 """
+import sys
 from typing import Optional
 
 from pydantic_settings import (
@@ -83,8 +84,9 @@ class Settings(BaseSettings):
     LSEG_API_TIMEOUT: float = 5.0
 
     # --- MCP (Model Context Protocol) ---
-    MCP_SERVER_COMMAND: str = "python3"
+    MCP_SERVER_COMMAND: str = sys.executable
     MCP_SERVER_ARGS: str = "app/services/aidaan/mcp/market.py"
+    MCP_TRANSPORT: str = "inprocess"  # "inprocess" (default) | "stdio"
 
     # --- BigQuery Data Warehouse ---
     LDL_BIGQUERY_DATASET: str = "ldl_v2"

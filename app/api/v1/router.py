@@ -5,6 +5,7 @@ Harmonizes all Phase 1 endpoints under the /v1 prefix.
 from fastapi import APIRouter
 from app.api.v1.routes import (
     auth,
+    diagnostics,
     messages,
     tools,
     websocket
@@ -20,6 +21,9 @@ api_router.include_router(messages.router, tags=["aidaan"])
 
 # Tool Invocations
 api_router.include_router(tools.router, prefix="/tools", tags=["tools"])
+
+# Diagnostics (safe introspection)
+api_router.include_router(diagnostics.router, tags=["diagnostics"])
 
 # Real-time WebSockets
 api_router.include_router(websocket.router, prefix="/ws", tags=["ws"])

@@ -76,15 +76,38 @@ class MarketAgent(BaseAgent):
              # Check for simulation note or valid data
              price = data.get("price")
              if price:
-                 change = data.get("change_percent", "0%")
-                 reply = f"[Direct Answer] {symbol} is currently trading at {price} ({change}).\n\n" \
-                         f"[Market Insight] Institutional flows are being monitored for {symbol}. Volume is at {data.get('volume', 'N/A')}.\n\n" \
-                         f"[Trade Implication] Positioning suggests a neutral/cautious stance at current levels.\n\n" \
-                         f"[Optional Follow-up] Would you like to check key support levels or recent news?"
-                 if "note" in data:
-                     reply += f"\n\n(Note: {data['note']})"
+                 try:
+                     change_val = float(str(data.get("change_percent", "0")).strip('%'))
+                 except:
+                     change_val = 0.0
                      
-                 return self.build_message_response(reply=reply, bullets=[f"Ticker: {symbol}", f"Price: {price}"], conversation_id=conversation_id, model_info={"agent": self.name, "llm": "FASTPATH-TEMPLATE"})
+                 change_str = data.get("change_percent", "0%")
+                 reply = (
+                     f"### [Direct Answer]\n\n"
+                     f"| Metric | Value |\n"
+                     f"| :--- | :--- |\n"
+                     f"| **Current Price** | {price} |\n"
+                     f"| **Change (%)** | {change_str} |\n"
+                     f"| **Volume** | {data.get('volume', 'N/A')} |\n"
+                     f"| **Previous Close** | {data.get('previous_close', 'N/A')} |\n\n"
+                     f"### [Market Insight]\n"
+                     f"Institutional flows for **{symbol}** are currently { 'skewed to the upside' if change_val > 0 else 'under pressure' }. "
+                     f"Volume of {data.get('volume', 'N/A')} indicates {'active' if data.get('volume') and str(data.get('volume')).replace(',','').isdigit() and int(str(data.get('volume')).replace(',','')) > 1000000 else 'moderate'} participation from large-scale desk accounts.\n\n"
+                     f"### [Trade Implication]\n"
+                     f"Positioning suggests a **{'bullish' if change_val > 0 else 'cautious'}** bias. "
+                     f"Traders should monitor for support at {data.get('low', 'N/A')} and resistance at {data.get('high', 'N/A')}.\n\n"
+                     f"### [Optional Follow-up]\n"
+                     f"Would you like to analyze **{symbol}'s** 10-day price trend or implied volatility levels?"
+                 )
+                 if "note" in data:
+                     reply += f"\n\n> [!NOTE]\n> {data['note']}"
+                       
+                 return self.build_message_response(
+                     reply=reply, 
+                     bullets=[f"Ticker: {symbol}", f"Price: {price}"], 
+                     conversation_id=conversation_id, 
+                     model_info={"agent": self.name, "llm": "PREMIUM-FASTPATH"}
+                 )
 
         try:
             # Execute agentic loop with tool discovery enabled

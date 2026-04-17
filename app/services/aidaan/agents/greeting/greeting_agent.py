@@ -19,6 +19,8 @@ from app.services.aidaan.core.base import BaseAgent
 from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
 from app.core.config.settings import settings
+from app.services.aidaan.providers.risk_provider import JSONRiskProvider
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,9 @@ class GreetingAgent(BaseAgent):
         Initialize the agent with a standard conversation model.
         """
         super().__init__(name="greeting", model_name=settings.VERTEX_AI_MODEL_NAME)
+        # Load risk data for premium greetings
+        data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "providers", "data_dictionary.json")
+        self.risk_provider = JSONRiskProvider(data_path)
 
     def _get_time_of_day(self, timezone_str: str = "Asia/Kolkata") -> str:
         """
@@ -82,13 +87,17 @@ class GreetingAgent(BaseAgent):
         # --- Heuristic Optimization ---
         # If it's a simple greeting, use the calculated time of day immediately.
         lowered = text.lower().strip()
+        risk_metrics = self.risk_provider.get_risk_metrics("EUR/USD")
+        soft_limit = risk_metrics.get("soft_limit", "50,000,000 USD")
+        
         if lowered in ["hi", "hello", "hey", "good morning", "good evening", "good afternoon"]:
             cap_time = time_of_day.capitalize()
             return self.build_message_response(
-                reply=f"Good {time_of_day}, {username}. AIDAAN Desk is standing by. How can I assist with your trades today?",
-                bullets=["AIDAAN is ready for Market Analysis & Order Staging."],
+                reply=f"Good {time_of_day}, {username}. Welcome to AIDAAN. How may I assist your desk today?\n"
+                      f"Your current **EUR/USD** notional soft limit is **{soft_limit}**.",
+                bullets=["AIDAAN Desk Link Active.", f"Time: {datetime.datetime.now().strftime('%H:%M:%S')}"],
                 conversation_id=conversation_id,
-                model_info={"agent": self.name, "llm": "heuristic"},
+                model_info={"agent": self.name, "llm": "premium-heuristic"},
             )
 
         # --- LLM Synthesis ---
@@ -96,7 +105,8 @@ class GreetingAgent(BaseAgent):
         prompt = Prompts.GREETING_SYNTHESIS.format(
             username=username,
             time_of_day=time_of_day,
-            text=text
+            text=text,
+            soft_limit=soft_limit
         )
         
         try:

@@ -19,6 +19,14 @@
         "status": "CLEAR",
         "desk_limit": "1000M"
     },
+    "EUR/USD": {
+        "delta": 0.85,
+        "gamma": 0.02,
+        "vol_24h": "8.5%",
+        "status": "NORMAL",
+        "soft_limit": "50,000,000 USD",
+        "hard_limit": "100,000,000 USD"
+    },
     "GBP/USD": {
         "delta": 0.85,
         "gamma": 0.02,

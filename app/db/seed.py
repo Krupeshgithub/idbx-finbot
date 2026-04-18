@@ -47,7 +47,7 @@ def seed_synthetic_data() -> None:
             User(
                 username="trader-001",
                 email="trader-001@example.com",
-                full_name="Aarav Mehta",
+                full_name="Krupesh Patel",
                 role="senior_trader",
                 hashed_password=get_password_hash("Password123"),
                 preferences={"theme": "glass", "voice_mode": True},

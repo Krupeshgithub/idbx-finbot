@@ -383,6 +383,116 @@ async def get_technical_indicator(
     params.update(kwargs)
     return await _fetch_av(params)
 
+# Gainers and Losers tools
+
+@mcp.tool()
+async def get_top_gainers_losers() -> Dict[str, Any]:
+    """
+    Get today's top 20 gainers, losers, and most actively traded tickers.
+    Very fast endpoint to understand overall market sentiment at a glance.
+    """
+    return await _fetch_av({
+        "function": "TOP_GAINERS_LOSERS"
+    })
+
+
+# Intraday series tools
+
+@mcp.tool()
+async def get_intraday_series(symbol: str, interval: str = "5min") -> Dict[str, Any]:
+    """
+    Get live intraday stock prices.
+    Intervals: 1min, 5min, 15min, 30min, 60min.
+    """
+    return await _fetch_av({
+        "function": "TIME_SERIES_INTRADAY",
+        "symbol": symbol.upper(),
+        "interval": interval,
+    })
+
+
+# Crypto rating tools
+
+@mcp.tool()
+async def get_crypto_rating(symbol: str) -> Dict[str, Any]:
+    """
+    Get the FCAS rating (Fundamental Crypto Asset Score) for a Crypto asset.
+    """
+    return await _fetch_av({
+        "function": "CRYPTO_RATING",
+        "symbol": symbol.upper()
+    })
+
+
+# Insider transactions tools
+
+@mcp.tool()
+async def get_insider_transactions(symbol: str) -> Dict[str, Any]:
+    """
+    Get the latest insider trading transactions (officers, directors) for a company.
+    Helps detect if executives are buying or selling their own company's stock.
+    """
+    return await _fetch_av({
+        "function": "INSIDER_TRANSACTIONS",
+        "symbol": symbol.upper()
+    })
+
+
+# --- Deeply Sliced (Fast Performance) Tools ---
+
+@mcp.tool()
+async def get_key_company_metrics(symbol: str) -> Dict[str, Any]:
+    """
+    Get ONLY the most critical metrics (PE, Market Cap, Dividend, EPS, 52WeekHigh/Low).
+    Divided from 'get_company_overview' to return a tiny, ultra-fast JSON payload.
+    """
+    data = await _fetch_av({
+        "function": "OVERVIEW",
+        "symbol": symbol.upper()
+    })
+    
+    if "error" in data:
+        return data
+        
+    return {
+        "Symbol": data.get("Symbol"),
+        "Name": data.get("Name"),
+        "Sector": data.get("Sector"),
+        "MarketCapitalization": data.get("MarketCapitalization"),
+        "PERatio": data.get("PERatio"),
+        "DividendYield": data.get("DividendYield"),
+        "EPS": data.get("EPS"),
+        "52WeekHigh": data.get("52WeekHigh"),
+        "52WeekLow": data.get("52WeekLow"),
+    }
+
+
+@mcp.tool()
+async def get_latest_financial_report(symbol: str, report_type: str = "INCOME_STATEMENT") -> Dict[str, Any]:
+    """
+    Get ONLY the most recent Annual and Quarterly financial report (Income, Balance, or CashFlow).
+    Use this instead of the full historical tools when the user only asks for "current/latest" data.
+    Valid report_type: INCOME_STATEMENT, BALANCE_SHEET, CASH_FLOW
+    """
+    data = await _fetch_av({
+        "function": report_type.upper(),
+        "symbol": symbol.upper()
+    })
+    
+    if "error" in data:
+        return data
+        
+    # SLICING: Get only the [0]th index (the latest report) instead of 5 years of data
+    latest_annual = data.get("annualReports", [{}])[0] if data.get("annualReports") else {}
+    latest_quarterly = data.get("quarterlyReports", [{}])[0] if data.get("quarterlyReports") else {}
+    
+    return {
+        "symbol": data.get("symbol"),
+        "report_type": report_type,
+        "latest_annual_report": latest_annual,
+        "latest_quarterly_report": latest_quarterly
+    }
+
 
 if __name__ == "__main__":
     mcp.run()

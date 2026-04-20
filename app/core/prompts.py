@@ -234,6 +234,13 @@ class Prompts:
         "My responses are based on market data and system state."
     )
 
+    MULTI_LANGUAGE_INSTRUCTION = (
+        "IMPORTANT: You are a natively multi-lingual system. You MUST detect the language of the user's message. "
+        "Whatever language the user communicates in, you MUST seamlessly translate your final natural language response "
+        "(reply, bullets, explanations) into that exact language natively. "
+        "Do NOT translate internal JSON keys or internal API parameters, only the user-facing text. Maintain your professional persona."
+    )
+
     # =========================================================================
     # 4. AGENT SYSTEM PROMPTS (used as system= in multi-turn calls)
     # =========================================================================

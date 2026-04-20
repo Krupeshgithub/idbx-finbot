@@ -340,7 +340,18 @@ class LLMClient:
     def get_reasoning_model_name(self) -> str:
         return self._reasoning_model_name
 
+    def _apply_language_instruction(self, system_instruction: Optional[str] = None) -> str:
+        from app.core.prompts import Prompts
+        lang_instruction = Prompts.MULTI_LANGUAGE_INSTRUCTION
+        if settings.SUPPORTED_LANGUAGES and settings.SUPPORTED_LANGUAGES.lower() not in ["all", "any", "unrestricted"]:
+            lang_instruction += f"\nNote: Try to prioritize supporting these specific languages if queried: {settings.SUPPORTED_LANGUAGES}"
+            
+        if system_instruction:
+            return f"{system_instruction}\n\n{lang_instruction}"
+        return lang_instruction
+
     def _build_json_config(self, schema: Optional[Any] = None, system_instruction: Optional[str] = None) -> types.GenerateContentConfig:
+        system_instruction = self._apply_language_instruction(system_instruction)
         return types.GenerateContentConfig(
             temperature=settings.VERTEX_AI_TEMPERATURE,
             max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
@@ -352,6 +363,7 @@ class LLMClient:
         )
 
     def _build_text_config(self, system_instruction: Optional[str] = None) -> types.GenerateContentConfig:
+        system_instruction = self._apply_language_instruction(system_instruction)
         return types.GenerateContentConfig(
             temperature=settings.VERTEX_AI_TEMPERATURE,
             max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,

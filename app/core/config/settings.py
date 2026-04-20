@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     ENABLE_KILL_SWITCH: bool = True
     MAX_PASSWORD_BYTES: int = 72
 
+    # --- Multi-Language Support ---
+    SUPPORTED_LANGUAGES: str = "All"
+
     # --- Database / AlloyDB ---
     DB_BACKEND: str = "postgresql"
     DATABASE_URL: Optional[str] = None

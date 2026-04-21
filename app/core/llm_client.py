@@ -33,6 +33,8 @@ from google.genai import types
 
 from app.core.cache import cache
 from app.core.config.settings import settings
+from app.core.dlp_client import dlp_client
+from app.core.audit_logger import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -62,43 +64,7 @@ class LLMClient:
         self._mcp_exit_stack = None
         self._mcp_inprocess_server = None
 
-        self._configure_vertex_auth()
         self._ensure_client()
-
-    def _configure_vertex_auth(self) -> None:
-        """
-        Configure service-account based auth when an explicit path is supplied.
-        Otherwise Vertex AI falls back to Application Default Credentials.
-        """
-        if settings.VERTEX_AI_SERVICE_ACCOUNT_JSON:
-            try:
-                credential_dir = Path(tempfile.gettempdir())
-                credential_dir.mkdir(parents=True, exist_ok=True)
-                credential_path = credential_dir / "aidaan-vertex-service-account.json"
-                credential_path.write_text(settings.VERTEX_AI_SERVICE_ACCOUNT_JSON, encoding="utf-8")
-                self._temp_credential_file = credential_path
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credential_path)
-                logger.info(
-                    "[LLMClient] Using service account credentials from VERTEX_AI_SERVICE_ACCOUNT_JSON"
-                )
-                return
-            except Exception as exc:
-                logger.error("[LLMClient] Failed to persist VERTEX_AI_SERVICE_ACCOUNT_JSON: %s", exc)
-
-        credential_path = settings.VERTEX_AI_SERVICE_ACCOUNT_FILE
-        if not credential_path:
-            return
-
-        resolved_path = Path(credential_path).expanduser()
-        if not resolved_path.is_file():
-            logger.warning(
-                "[LLMClient] VERTEX_AI_SERVICE_ACCOUNT_FILE does not exist: %s",
-                resolved_path,
-            )
-            return
-
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(resolved_path)
-        logger.info("[LLMClient] Using service account credentials from %s", resolved_path)
 
     def _ensure_client(self) -> Optional[genai.Client]:
         if self._client is not None:
@@ -478,6 +444,9 @@ class LLMClient:
             self._log_usage("generate_json", prompt, cached=True)
             return cached_result
 
+        # REDACT PII via DLP before Vertex processes it
+        prompt = dlp_client.redact_pii(prompt)
+
         # Helper: add JSON instruction for non-strict calls
         if use_hybrid_mode and "Return ONLY raw JSON" not in prompt:
             prompt += "\n\nCRITICAL: Return ONLY raw JSON. No conversational filler or markdown blocks."
@@ -523,6 +492,13 @@ class LLMClient:
                     model_name,
                     latency_ms,
                 )
+                audit_logger.log_llm_transaction(
+                    prompt=prompt,
+                    response=parsed,
+                    model_id=model_name,
+                    latency_ms=latency_ms,
+                    status="SUCCESS"
+                )
                 return parsed
             except Exception as exc:
                 last_error = exc
@@ -539,6 +515,13 @@ class LLMClient:
                     await asyncio.sleep(delay)
                 else:
                     logger.error("[LLMClient] generate_json exhausted retries: %s", last_error)
+                    audit_logger.log_llm_transaction(
+                        prompt=prompt,
+                        response=None,
+                        model_id=model_name,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        status="ERROR"
+                    )
                     return {"error": str(last_error) if last_error else "Vertex AI JSON generation failed"}
 
     async def _generate_json_with_mcp_tools(
@@ -664,6 +647,13 @@ class LLMClient:
                     model_name,
                     latency_ms,
                 )
+                audit_logger.log_llm_transaction(
+                    prompt=prompt,
+                    response=parsed,
+                    model_id=model_name,
+                    latency_ms=latency_ms,
+                    status="SUCCESS"
+                )
                 return parsed
             except Exception as exc:
                 last_error = exc
@@ -691,6 +681,10 @@ class LLMClient:
         Send a prompt and return raw text response.
         """
         model_name = model_override or self._default_model_name
+ 
+        # REDACT PII via DLP before Vertex processes it
+        prompt = dlp_client.redact_pii(prompt)
+
         cache_key = self._cache_key("text", model_name, prompt)
         cached_result = cache.get(cache_key)
         if cached_result is not None:
@@ -711,9 +705,23 @@ class LLMClient:
             text = (response.text or "").strip()
             cache.set(cache_key, text, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_text", prompt)
+            audit_logger.log_llm_transaction(
+                prompt=prompt,
+                response=text,
+                model_id=model_name,
+                latency_ms=0,
+                status="SUCCESS"
+            )
             return text
         except Exception as exc:
             logger.error("[LLMClient] generate_text failed: %s: %s", type(exc).__name__, exc)
+            audit_logger.log_llm_transaction(
+                prompt=prompt,
+                response=None,
+                model_id=model_name,
+                latency_ms=0,
+                status="ERROR"
+            )
             return ""
 
     def generate_json_sync(
@@ -726,6 +734,10 @@ class LLMClient:
         Synchronous blocking version used in threadpool contexts.
         """
         model_name = model_override or self._default_model_name
+
+        # REDACT PII via DLP before Vertex processes it
+        prompt = dlp_client.redact_pii(prompt)
+
         cache_key = self._cache_key("json_sync", model_name, prompt)
         cached_result = cache.get(cache_key)
         if cached_result is not None:
@@ -757,12 +769,33 @@ class LLMClient:
                 model_name,
                 latency_ms,
             )
+            audit_logger.log_llm_transaction(
+                prompt=prompt,
+                response=parsed,
+                model_id=model_name,
+                latency_ms=latency_ms,
+                status="SUCCESS"
+            )
             return parsed
         except json.JSONDecodeError as exc:
             logger.warning("[LLMClient] sync JSON parse error: %s", exc)
+            audit_logger.log_llm_transaction(
+                prompt=prompt,
+                response=None,
+                model_id=model_name,
+                latency_ms=int((time.monotonic() - start) * 1000),
+                status="ERROR"
+            )
             return {"error": "JSON parse failed"}
         except Exception as exc:
             logger.error("[LLMClient] sync call failed: %s: %s", type(exc).__name__, exc)
+            audit_logger.log_llm_transaction(
+                prompt=prompt,
+                response=None,
+                model_id=model_name,
+                latency_ms=int((time.monotonic() - start) * 1000),
+                status="ERROR"
+            )
             return {"error": str(exc)}
 
 

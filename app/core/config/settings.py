@@ -1,16 +1,22 @@
 """
 Centralized Configuration for AIDAAN - Institutional Standard.
-=============================================================
+
 This module handles all application settings using Pydantic-Settings.
 Configurations are loaded from environment variables or the local .env file.
 """
 import sys
-from typing import Optional
+import os
+import tempfile
+import logging
 
+from typing import Optional
+from pathlib import Path
 from pydantic_settings import (
-    BaseSettings, 
+    BaseSettings,
     SettingsConfigDict
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -33,6 +39,16 @@ class Settings(BaseSettings):
     # --- Google Cloud Platform ---
     GOOGLE_CLOUD_PROJECT: Optional[str] = None
     GOOGLE_CLOUD_LOCATION: str = "global"
+    
+    # --- Cloud DLP (Sensitive Data Protection) ---
+    GCP_DLP_LOCATION: str = "global"
+    GCP_DLP_DEIDENTIFY_TEMPLATE: Optional[str] = None
+    GCP_DLP_INSPECT_TEMPLATE: Optional[str] = None
+    
+    # --- Cloud Logging (Audit Trails) ---
+    GCP_AUDIT_LOG_NAME: str = "aidann-audit-log"
+    
+    # --- Vertex AI ---
     VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
     VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
     VERTEX_AI_API_VERSION: str = "v1"
@@ -109,3 +125,36 @@ class Settings(BaseSettings):
 # Instantiate the global settings object.
 # Pydantic will automatically load values from .env on initialization.
 settings = Settings()
+
+
+def setup_gcp_credentials():
+    """
+    Ensures GOOGLE_APPLICATION_CREDENTIALS is set for all Google Cloud SDKs.
+    """
+    if settings.VERTEX_AI_SERVICE_ACCOUNT_JSON:
+        try:
+            credential_dir = Path(tempfile.gettempdir())
+            credential_dir.mkdir(parents=True, exist_ok=True)
+            credential_path = credential_dir / "aidaan-vertex-service-account.json"
+            credential_path.write_text(settings.VERTEX_AI_SERVICE_ACCOUNT_JSON, encoding="utf-8")
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credential_path)
+            logger.info("[GCPAuth] Using Service Account from JSON content.")
+            return
+        except Exception as exc:
+            logger.error("[GCPAuth] Failed to write JSON credentials: %s", exc)
+
+    if settings.VERTEX_AI_SERVICE_ACCOUNT_FILE:
+        resolved_path = Path(settings.VERTEX_AI_SERVICE_ACCOUNT_FILE).expanduser()
+        if resolved_path.is_file():
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(resolved_path)
+            logger.info("[GCPAuth] Set GOOGLE_APPLICATION_CREDENTIALS to: %s", resolved_path)
+        else:
+            # Check relative to /app in Docker
+            docker_path = Path("/app") / settings.VERTEX_AI_SERVICE_ACCOUNT_FILE
+            if docker_path.is_file():
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(docker_path)
+                logger.info("[GCPAuth] Set GOOGLE_APPLICATION_CREDENTIALS")
+
+
+# Run setup immediately on module load
+setup_gcp_credentials()

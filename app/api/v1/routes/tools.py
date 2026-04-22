@@ -3,6 +3,8 @@ AIDAAN Tool Invocation Routes.
 Handles the formal execution of actions drafted by agents.
 """
 from fastapi import APIRouter
+
+from app.db.repositories import ANONYMOUS_IDENTITIES
 from app.schemas.aidaan import (
     ToolInvokeRequest,
     ToolInvokeResponse
@@ -25,6 +27,12 @@ async def invoke_tool(payload: ToolInvokeRequest):
     # Hardcoded safety check: Log the intent and return success with draft details
     # In Phase 2, this will connect to the MCP executor.
     
+    resolved_username = (
+        None
+        if not payload.user_id or payload.user_id.strip().lower() in ANONYMOUS_IDENTITIES
+        else payload.user_id
+    )
+
     if payload.tool_name == "draft_rfq_ticket":
         response = ToolInvokeResponse(
             ok=True,
@@ -36,7 +44,7 @@ async def invoke_tool(payload: ToolInvokeRequest):
             }
         )
         persistence_service.persist_tool_invocation(
-            username=payload.user_id,
+            username=resolved_username,
             conversation_id=payload.arguments.get("conversation_id"),
             tool_name=payload.tool_name,
             arguments=payload.arguments,
@@ -52,7 +60,7 @@ async def invoke_tool(payload: ToolInvokeRequest):
         error=None
     )
     persistence_service.persist_tool_invocation(
-        username=payload.user_id,
+        username=resolved_username,
         conversation_id=payload.arguments.get("conversation_id"),
         tool_name=payload.tool_name,
         arguments=payload.arguments,

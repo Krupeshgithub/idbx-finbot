@@ -19,6 +19,7 @@ from app.services.aidaan.core.base import BaseAgent
 from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
 from app.core.config.settings import settings
+from app.db.repositories import normalize_username
 from app.services.aidaan.providers.risk_provider import JSONRiskProvider
 import os
 
@@ -80,7 +81,8 @@ class GreetingAgent(BaseAgent):
             AidaanMessageResponse: A personalized greeting with market tips.
         """
         context = context or {}
-        username = context.get("username", "Trader")
+        resolved_username = normalize_username(context.get("username"))
+        username = resolved_username or "Trader"
         timezone = context.get("timezone", "Asia/Kolkata")
         time_of_day = self._get_time_of_day(timezone)
         
@@ -113,7 +115,7 @@ class GreetingAgent(BaseAgent):
             parsed = await self.generate_json_response(
                 prompt,
                 conversation_id=conversation_id,
-                username=username,
+                username=resolved_username,
             )
             return self.build_message_response(
                 reply=parsed.get("reply", f"Good {time_of_day}, {username}."),

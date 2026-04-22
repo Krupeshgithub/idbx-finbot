@@ -29,7 +29,7 @@ async def login(payload: LoginRequest):
     """
     with get_db_session() as session:
         user = get_user_by_username(session, payload.username)
-        if not user or not verify_password(
+        if not user or not user.hashed_password or not verify_password(
             payload.password,
             user.hashed_password,
         ):

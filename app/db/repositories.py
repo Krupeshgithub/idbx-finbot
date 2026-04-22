@@ -3,11 +3,14 @@ Repository helpers for operational persistence.
 """
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import desc, select
+from sqlalchemy import MetaData, Table, desc, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.type_api import TypeEngine
 
 from app.db.models import (
     AuditEvent,
@@ -19,12 +22,137 @@ from app.db.models import (
     Message,
     RFQDraft,
     ToolInvocation,
-    User,
 )
+from app.db.schema_config import schema_for_table
 
 
-def get_user_by_username(session: Session, username: str) -> Optional[User]:
-    return session.execute(select(User).where(User.username == username)).scalar_one_or_none()
+ANONYMOUS_IDENTITIES = {"anonymous", "anonymous-trader", "guest", "demo", "system", "trader", "user"}
+USER_LOOKUP_COLUMNS = ("trader_id", "username", "user_name", "email", "id")
+USER_FULL_NAME_COLUMNS = ("full_name", "name", "display_name")
+USER_ROLE_COLUMNS = ("role", "user_role")
+USER_PASSWORD_COLUMNS = ("hashed_password", "password_hash", "password")
+USER_ACTIVE_COLUMNS = ("is_active", "active", "enabled", "status")
+USER_PREFERENCES_COLUMNS = ("preferences", "preferences_json", "metadata", "meta")
+
+
+@dataclass
+class UserRecord:
+    id: Any
+    username: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    role: str = "trader"
+    hashed_password: Optional[str] = None
+    is_active: bool = True
+    preferences: Dict[str, Any] | List[Any] | None = None
+
+
+def _is_anonymous_identity(username: str | None) -> bool:
+    if not username:
+        return True
+    return username.strip().lower() in ANONYMOUS_IDENTITIES
+
+
+def _resolve_first_value(row: Any, columns: List[str], candidates: tuple[str, ...], default: Any = None) -> Any:
+    for candidate in candidates:
+        if candidate in columns:
+            return row._mapping.get(candidate)
+    return default
+
+
+def normalize_username(username: str | None) -> str | None:
+    if username is None:
+        return None
+    normalized = username.strip()
+    if not normalized:
+        return None
+    if normalized.lower() in ANONYMOUS_IDENTITIES:
+        return None
+    return normalized
+
+
+def _is_uuid_compatible(column_type: TypeEngine[Any]) -> bool:
+    try:
+        python_type = column_type.python_type
+    except (AttributeError, NotImplementedError):
+        python_type = None
+    return python_type is uuid.UUID
+
+
+def _coerce_lookup_value(raw_value: str, column_type: TypeEngine[Any]) -> Any:
+    if _is_uuid_compatible(column_type):
+        return uuid.UUID(raw_value)
+    return raw_value
+
+
+def _build_full_name(row: Any, columns: List[str]) -> Optional[str]:
+    explicit_name = _resolve_first_value(row, columns, USER_FULL_NAME_COLUMNS)
+    if explicit_name:
+        return explicit_name
+
+    first_name = row._mapping.get("first_name") if "first_name" in columns else None
+    last_name = row._mapping.get("last_name") if "last_name" in columns else None
+    combined = " ".join(part for part in [first_name, last_name] if part)
+    return combined or None
+
+
+def _coerce_active_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"active", "enabled", "true", "1"}
+    if value is None:
+        return True
+    return bool(value)
+
+
+def _load_users_table(session: Session) -> tuple[Table, List[str]]:
+    bind = session.get_bind()
+    metadata = MetaData()
+    table = Table(
+        "users",
+        metadata,
+        schema=schema_for_table("users"),
+        autoload_with=bind,
+    )
+    columns = [column.name for column in table.columns]
+    return table, columns
+
+
+def _user_record_from_row(row: Any, columns: List[str]) -> UserRecord:
+    user_id = row._mapping.get("id")
+    lookup_value = _resolve_first_value(row, columns, USER_LOOKUP_COLUMNS)
+    return UserRecord(
+        id=user_id,
+        username=str(lookup_value or user_id or ""),
+        email=_resolve_first_value(row, columns, ("email",)),
+        full_name=_build_full_name(row, columns),
+        role=_resolve_first_value(row, columns, USER_ROLE_COLUMNS, "trader") or "trader",
+        hashed_password=_resolve_first_value(row, columns, USER_PASSWORD_COLUMNS),
+        is_active=_coerce_active_value(_resolve_first_value(row, columns, USER_ACTIVE_COLUMNS, True)),
+        preferences=_resolve_first_value(row, columns, USER_PREFERENCES_COLUMNS, {}) or {},
+    )
+
+
+def get_user_by_username(session: Session, username: str) -> Optional[UserRecord]:
+    normalized_username = normalize_username(username)
+    if _is_anonymous_identity(normalized_username):
+        return None
+
+    users_table, columns = _load_users_table(session)
+
+    for column_name in USER_LOOKUP_COLUMNS:
+        if column_name not in columns:
+            continue
+        try:
+            lookup_value = _coerce_lookup_value(normalized_username, users_table.c[column_name].type)
+        except (ValueError, AttributeError):
+            continue
+        row = session.execute(
+            select(users_table).where(users_table.c[column_name] == lookup_value)
+        ).first()
+        if row is not None:
+            return _user_record_from_row(row, columns)
+
+    return None
 
 
 def get_primary_membership(session: Session, user_id: str) -> Optional[DeskMembership]:
@@ -162,7 +290,7 @@ def get_user_operational_bundle(session: Session, *, username: str) -> Dict[str,
             "email": user.email,
             "full_name": user.full_name,
             "role": user.role,
-            "preferences": user.preferences,
+            "preferences": user.preferences or {},
         },
         "desk": {
             "desk_code": desk.desk_code,

@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     DB_ECHO: bool = False
     DB_AUTO_CREATE: bool = True
     DB_AUTO_SEED: bool = True
+    DB_PUBLIC_SCHEMA: str = "public"
+    DB_AIDAAN_SCHEMA: str = "aidaan"
     AIDAAN_HISTORY_WINDOW: int = 5
     ALLOYDB_ENABLED: bool = False
     ALLOYDB_USE_AUTH_PROXY: bool = False

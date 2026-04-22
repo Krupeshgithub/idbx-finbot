@@ -12,6 +12,7 @@ from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text,
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.schema_config import qualified_table_name, table_args_for
 
 
 def _uuid() -> UUID:
@@ -20,6 +21,7 @@ def _uuid() -> UUID:
 
 class Desk(Base):
     __tablename__ = "desks"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     desk_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -39,6 +41,7 @@ class Desk(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -57,10 +60,11 @@ class User(Base):
 
 class DeskMembership(Base):
     __tablename__ = "desk_memberships"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
-    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    desk_id: Mapped[UUID] = mapped_column(ForeignKey("desks.id"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey(f"{qualified_table_name('users')}.id"), index=True)
+    desk_id: Mapped[UUID] = mapped_column(ForeignKey(f"{qualified_table_name('desks')}.id"), index=True)
     title: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -71,9 +75,10 @@ class DeskMembership(Base):
 
 class DeskLimit(Base):
     __tablename__ = "desk_limits"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
-    desk_id: Mapped[UUID] = mapped_column(ForeignKey("desks.id"), index=True)
+    desk_id: Mapped[UUID] = mapped_column(ForeignKey(f"{qualified_table_name('desks')}.id"), index=True)
     instrument: Mapped[str] = mapped_column(String(128))
     limit_type: Mapped[str] = mapped_column(String(64), default="notional")
     soft_limit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -87,9 +92,13 @@ class DeskLimit(Base):
 
 class Counterparty(Base):
     __tablename__ = "counterparties"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
-    desk_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("desks.id"), nullable=True)
+    desk_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(f"{qualified_table_name('desks')}.id"),
+        nullable=True,
+    )
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
     region: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -102,10 +111,19 @@ class Counterparty(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    desk_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("desks.id"), nullable=True, index=True)
+    user_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(f"{qualified_table_name('users')}.id"),
+        nullable=True,
+        index=True,
+    )
+    desk_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(f"{qualified_table_name('desks')}.id"),
+        nullable=True,
+        index=True,
+    )
     channel: Mapped[str] = mapped_column(String(32), default="rest")
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
@@ -122,9 +140,13 @@ class Conversation(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
-    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey(f"{qualified_table_name('conversations')}.id"),
+        index=True,
+    )
     role: Mapped[str] = mapped_column(String(32))
     content: Mapped[str] = mapped_column(Text)
     agent_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -137,10 +159,19 @@ class Message(Base):
 
 class RFQDraft(Base):
     __tablename__ = "rfq_drafts"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
-    conversation_id: Mapped[Optional[str]] = mapped_column(ForeignKey("conversations.id"), nullable=True, index=True)
-    user_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey(f"{qualified_table_name('conversations')}.id"),
+        nullable=True,
+        index=True,
+    )
+    user_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(f"{qualified_table_name('users')}.id"),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[str] = mapped_column(String(32), default="draft")
     instrument: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     notional: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -157,6 +188,7 @@ class RFQDraft(Base):
 
 class ToolInvocation(Base):
     __tablename__ = "tool_invocations"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     conversation_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
@@ -170,9 +202,14 @@ class ToolInvocation(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
+    __table_args__ = table_args_for(__tablename__)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
-    conversation_id: Mapped[Optional[str]] = mapped_column(ForeignKey("conversations.id"), nullable=True, index=True)
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey(f"{qualified_table_name('conversations')}.id"),
+        nullable=True,
+        index=True,
+    )
     event_type: Mapped[str] = mapped_column(String(128), index=True)
     severity: Mapped[str] = mapped_column(String(32), default="info")
     actor: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

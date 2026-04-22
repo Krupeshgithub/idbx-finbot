@@ -9,6 +9,7 @@ import time
 
 from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
 from app.services.persistence import persistence_service
+from app.db.repositories import ANONYMOUS_IDENTITIES
 from fastapi import (
     APIRouter, 
     WebSocket, 
@@ -51,7 +52,8 @@ async def aidaan_websocket(websocket: WebSocket):
                 "anonymous-trader"
             )
             context = dict(message.get("context", {}) or {})
-            context.setdefault("username", user_id)
+            if str(user_id).strip().lower() not in ANONYMOUS_IDENTITIES:
+                context.setdefault("username", user_id)
 
             # Proximity signals drive the Awakening/Dormant states client-side.
             if msg_type == "proximity":
@@ -114,7 +116,7 @@ async def aidaan_websocket(websocket: WebSocket):
                     )
                     persistence_service.persist_message_exchange(
                         conversation_id=response.conversation_id,
-                        username=user_id,
+                        username=None if str(user_id).strip().lower() in ANONYMOUS_IDENTITIES else user_id,
                         user_text=user_text,
                         response_payload=response.model_dump(),
                         channel="websocket",

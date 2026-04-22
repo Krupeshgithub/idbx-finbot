@@ -6,22 +6,22 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
 
-def _uuid() -> str:
-    return str(uuid4())
+def _uuid() -> UUID:
+    return uuid4()
 
 
 class Desk(Base):
     __tablename__ = "desks"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     desk_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
     location: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -40,7 +40,7 @@ class Desk(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     full_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -58,9 +58,9 @@ class User(Base):
 class DeskMembership(Base):
     __tablename__ = "desk_memberships"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    desk_id: Mapped[str] = mapped_column(ForeignKey("desks.id"), index=True)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    desk_id: Mapped[UUID] = mapped_column(ForeignKey("desks.id"), index=True)
     title: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -72,8 +72,8 @@ class DeskMembership(Base):
 class DeskLimit(Base):
     __tablename__ = "desk_limits"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    desk_id: Mapped[str] = mapped_column(ForeignKey("desks.id"), index=True)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
+    desk_id: Mapped[UUID] = mapped_column(ForeignKey("desks.id"), index=True)
     instrument: Mapped[str] = mapped_column(String(128))
     limit_type: Mapped[str] = mapped_column(String(64), default="notional")
     soft_limit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -88,8 +88,8 @@ class DeskLimit(Base):
 class Counterparty(Base):
     __tablename__ = "counterparties"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    desk_id: Mapped[Optional[str]] = mapped_column(ForeignKey("desks.id"), nullable=True)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
+    desk_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("desks.id"), nullable=True)
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
     region: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -104,8 +104,8 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[Optional[str]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    desk_id: Mapped[Optional[str]] = mapped_column(ForeignKey("desks.id"), nullable=True, index=True)
+    user_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    desk_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("desks.id"), nullable=True, index=True)
     channel: Mapped[str] = mapped_column(String(32), default="rest")
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
@@ -123,7 +123,7 @@ class Conversation(Base):
 class Message(Base):
     __tablename__ = "messages"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
     role: Mapped[str] = mapped_column(String(32))
     content: Mapped[str] = mapped_column(Text)
@@ -138,9 +138,9 @@ class Message(Base):
 class RFQDraft(Base):
     __tablename__ = "rfq_drafts"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     conversation_id: Mapped[Optional[str]] = mapped_column(ForeignKey("conversations.id"), nullable=True, index=True)
-    user_id: Mapped[Optional[str]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    user_id: Mapped[Optional[UUID]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="draft")
     instrument: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     notional: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -158,9 +158,9 @@ class RFQDraft(Base):
 class ToolInvocation(Base):
     __tablename__ = "tool_invocations"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     conversation_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    user_id: Mapped[Optional[UUID]] = mapped_column(Uuid, nullable=True, index=True)
     tool_name: Mapped[str] = mapped_column(String(128), index=True)
     arguments_json: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     result_json: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -171,7 +171,7 @@ class ToolInvocation(Base):
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
     conversation_id: Mapped[Optional[str]] = mapped_column(ForeignKey("conversations.id"), nullable=True, index=True)
     event_type: Mapped[str] = mapped_column(String(128), index=True)
     severity: Mapped[str] = mapped_column(String(32), default="info")
@@ -181,15 +181,3 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     conversation: Mapped[Optional[Conversation]] = relationship(back_populates="audit_events")
-
-
-class MarketSnapshotCacheMetadata(Base):
-    __tablename__ = "market_snapshot_cache_metadata"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    symbol: Mapped[str] = mapped_column(String(64), index=True)
-    source: Mapped[str] = mapped_column(String(64), default="alpha_vantage")
-    freshness_seconds: Mapped[int] = mapped_column(Integer, default=30)
-    last_ingested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    payload_json: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
-

@@ -32,21 +32,26 @@ USAGE:
 import logging
 import sys
 import os
+from app.core.config.settings import settings
 
 
 def setup_logging():
     """
     Configure root logger for the entire AIDAAN application.
-    Call once at startup.
+    Integrates Google Cloud Logging if a project ID is available.
     """
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
     log_format = os.getenv("LOG_FORMAT", "text")  # "text" or "json"
     log_level = getattr(logging, log_level_str, logging.INFO)
 
+    # 1. Setup Local Handlers (Stdout)
     if log_format == "json":
         _setup_json_logging(log_level)
     else:
         _setup_text_logging(log_level)
+
+    # 2. Setup Google Cloud Logging (Conditional)
+    _setup_gcp_logging(log_level)
 
     # Silence noisy third-party libraries
     logging.getLogger("google").setLevel(logging.WARNING)
@@ -56,7 +61,7 @@ def setup_logging():
 
     logger = logging.getLogger(__name__)
     logger.info(
-        f"[Logging] Configured. level={log_level_str} format={log_format}"
+        f"[Logging] Configured. level={log_level_str} format={log_format} gcp_enabled={bool(settings.GOOGLE_CLOUD_PROJECT)}"
     )
 
 
@@ -66,14 +71,12 @@ def _setup_text_logging(level: int):
     datefmt = "%H:%M:%S"
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+    # We use force=True to ensure basicConfig actually updates the root logger
     logging.basicConfig(level=level, handlers=[handler], force=True)
 
 
 def _setup_json_logging(level: int):
-    """
-    JSON format for production / log aggregation pipelines.
-    Each log line is a valid JSON object.
-    """
+    """JSON format for production logs."""
     import json
     import traceback
 
@@ -92,3 +95,31 @@ def _setup_json_logging(level: int):
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     logging.basicConfig(level=level, handlers=[handler], force=True)
+
+
+def _setup_gcp_logging(level: int):
+    """
+    Attaches the Google Cloud Logging handler to the root logger.
+    Requires GOOGLE_CLOUD_PROJECT and valid credentials.
+    """
+    project_id = settings.GOOGLE_CLOUD_PROJECT
+    if not project_id:
+        return
+
+    try:
+        from google.cloud import logging as cloud_logging
+        from google.cloud.logging.handlers import CloudLoggingHandler
+        
+        client = cloud_logging.Client(project=project_id)
+        # The handler will automatically capture all logs from the root logger
+        handler = CloudLoggingHandler(client, name="aidaan-app-logs")
+        handler.setLevel(level)
+        
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        
+        # Note: We don't use basicConfig here because we want to ADD to existing handlers, 
+        # not replace them.
+    except Exception as exc:
+        # Don't fail the app if logging setup fails
+        print(f"[Logging] Failed to initialize GCP Logging: {exc}", file=sys.stderr)

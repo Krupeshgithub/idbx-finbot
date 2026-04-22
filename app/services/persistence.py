@@ -143,4 +143,3 @@ class PersistenceService:
 
 
 persistence_service = PersistenceService()
-

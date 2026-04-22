@@ -223,3 +223,5 @@ test_frontend.html
 gen-lang-client-0710731093-26add4ee7529.json
 .codex
 .env.docker
+.vscode
+eval

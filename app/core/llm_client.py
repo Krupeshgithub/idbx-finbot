@@ -483,6 +483,14 @@ class LLMClient:
                 )
                 raw = (response.text or "").strip()
                 parsed = self._extract_json(raw)
+                
+                # REDACT PII from the response before caching or returning
+                if isinstance(parsed, dict):
+                    # We might want to redact specific fields or the whole JSON as string
+                    parsed_str = json.dumps(parsed)
+                    redacted_str = dlp_client.redact_pii(parsed_str)
+                    parsed = json.loads(redacted_str)
+
                 cache.set(cache_key, parsed, expire=settings.LLM_CACHE_EXPIRE)
                 self._log_usage("generate_json", prompt)
                 latency_ms = int((time.monotonic() - start) * 1000)
@@ -641,6 +649,13 @@ class LLMClient:
                     raise ValueError("Model returned no text after MCP tool usage")
 
                 parsed = self._extract_json(raw)
+                
+                # REDACT PII from the response
+                if isinstance(parsed, dict):
+                    parsed_str = json.dumps(parsed)
+                    redacted_str = dlp_client.redact_pii(parsed_str)
+                    parsed = json.loads(redacted_str)
+
                 latency_ms = int((time.monotonic() - start) * 1000)
                 logger.debug(
                     "[LLMClient] generate_json_with_mcp_tools OK | model=%s | latency=%sms",
@@ -703,6 +718,10 @@ class LLMClient:
                 config=self._build_text_config(),
             )
             text = (response.text or "").strip()
+            
+            # REDACT PII from the response
+            text = dlp_client.redact_pii(text)
+
             cache.set(cache_key, text, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_text", prompt)
             audit_logger.log_llm_transaction(

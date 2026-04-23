@@ -20,8 +20,7 @@ from app.schemas.aidaan import AidaanMessageResponse
 from app.core.prompts import Prompts
 from app.core.config.settings import settings
 from app.db.repositories import normalize_username
-from app.services.aidaan.providers.risk_provider import JSONRiskProvider
-import os
+from app.db.operational.service import operational_data_service
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +36,6 @@ class GreetingAgent(BaseAgent):
         Initialize the agent with a standard conversation model.
         """
         super().__init__(name="greeting", model_name=settings.VERTEX_AI_MODEL_NAME)
-        # Load risk data for premium greetings
-        data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "providers", "data_dictionary.json")
-        self.risk_provider = JSONRiskProvider(data_path)
 
     def _get_time_of_day(self, timezone_str: str = "Asia/Kolkata") -> str:
         """
@@ -61,6 +57,24 @@ class GreetingAgent(BaseAgent):
             return "evening"
         else:
             return "night"
+
+    @staticmethod
+    def _format_limit(limit_row: Optional[Dict[str, Any]]) -> Optional[str]:
+        """
+        Format a desk limit row for concise trader-facing output.
+        """
+        if not limit_row:
+            return None
+
+        soft_limit = limit_row.get("soft_limit")
+        if soft_limit in (None, ""):
+            return None
+
+        currency = limit_row.get("currency") or "USD"
+        try:
+            return f"{float(soft_limit):,.0f} {currency}"
+        except (TypeError, ValueError):
+            return f"{soft_limit} {currency}".strip()
 
     async def handle_message(
         self, 
@@ -84,31 +98,29 @@ class GreetingAgent(BaseAgent):
         resolved_username = normalize_username(context.get("username"))
         username = resolved_username or "Trader"
         timezone = context.get("timezone", "Asia/Kolkata")
+        try:
+            tz = pytz.timezone(timezone)
+        except Exception:
+            tz = pytz.timezone("Asia/Kolkata")
+        now = datetime.datetime.now(tz)
         time_of_day = self._get_time_of_day(timezone)
         
-        # --- Heuristic Optimization ---
-        # If it's a simple greeting, use the calculated time of day immediately.
-        lowered = text.lower().strip()
-        risk_metrics = self.risk_provider.get_risk_metrics("EUR/USD")
-        soft_limit = risk_metrics.get("soft_limit", "50,000,000 USD")
-        
-        if lowered in ["hi", "hello", "hey", "good morning", "good evening", "good afternoon"]:
-            cap_time = time_of_day.capitalize()
-            return self.build_message_response(
-                reply=f"Good {time_of_day}, {username}. Welcome to AIDAAN. How may I assist your desk today?\n"
-                      f"Your current **EUR/USD** notional soft limit is **{soft_limit}**.",
-                bullets=["AIDAAN Desk Link Active.", f"Time: {datetime.datetime.now().strftime('%H:%M:%S')}"],
-                conversation_id=conversation_id,
-                model_info={"agent": self.name, "llm": "premium-heuristic"},
-            )
+        greeting_context = operational_data_service.get_greeting_context(resolved_username, instrument="EUR/USD")
+        desk = greeting_context.get("desk") or {}
+        membership = greeting_context.get("desk_membership") or {}
+        selected_limit = greeting_context.get("selected_limit")
+        soft_limit = self._format_limit(selected_limit)
+        desk_name = desk.get("name")
+        desk_title = membership.get("title")
 
         # --- LLM Synthesis ---
-        # For more complex introductory messages or introductions.
         prompt = Prompts.GREETING_SYNTHESIS.format(
             username=username,
             time_of_day=time_of_day,
             text=text,
-            soft_limit=soft_limit
+            desk_name=desk_name or "Unknown desk",
+            desk_title=desk_title or "Trader",
+            soft_limit=soft_limit or "Unavailable"
         )
         
         try:
@@ -125,9 +137,14 @@ class GreetingAgent(BaseAgent):
             )
         except Exception as e:
             logger.warning(f"[GreetingAgent] Synthesis failed: {str(e)}")
+            reply = f"Good {time_of_day}, {username}. AIDAAN Desk is active and ready for your commands."
+            if desk_name:
+                reply = f"Good {time_of_day}, {username}. {desk_name} is active and ready for your commands."
+            if soft_limit:
+                reply += f" Your EUR/USD soft limit is {soft_limit}."
             return self.build_message_response(
-                reply=f"Good {time_of_day}, {username}. AIDAAN Desk is active and ready for your commands.",
-                bullets=["Session securely established."],
+                reply=reply,
+                bullets=[f"Time: {now.strftime('%H:%M:%S %Z')}", "Session securely established."],
                 conversation_id=conversation_id,
                 model_info={"agent": self.name, "llm": "fallback"},
             )

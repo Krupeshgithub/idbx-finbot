@@ -23,10 +23,11 @@ import re
 import shlex
 import sys
 import time
-import tempfile
+from contextlib import AsyncExitStack, asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from google import genai
 from google.genai import types
@@ -38,7 +39,10 @@ from app.core.audit_logger import audit_logger
 
 logger = logging.getLogger(__name__)
 
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vertex_llm_worker")
+_executor = ThreadPoolExecutor(
+    max_workers=settings.VERTEX_AI_MAX_WORKERS,
+    thread_name_prefix="vertex_llm_worker",
+)
 
 
 class LLMClient:
@@ -60,9 +64,8 @@ class LLMClient:
             "generate_json_sync": 0,
             "generate_text": 0,
         }
-        self._mcp_session = None
-        self._mcp_exit_stack = None
         self._mcp_inprocess_server = None
+        self._vertex_concurrency = asyncio.Semaphore(settings.VERTEX_AI_MAX_CONCURRENT_REQUESTS)
 
         self._ensure_client()
 
@@ -128,48 +131,83 @@ class LLMClient:
         reason = self._vertex_disabled_reason or "Vertex AI is not available."
         return {"error": reason}
 
+    @staticmethod
+    def _new_trace_id(prefix: str) -> str:
+        """
+        Build a compact trace id so multi-stage latency logs can be correlated.
+        """
+        return f"{prefix}-{uuid4().hex[:8]}"
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> int:
+        """
+        Convert a monotonic start time into integer milliseconds.
+        """
+        return int((time.monotonic() - start) * 1000)
+
     async def _run_generate_content(
         self,
         client: genai.Client,
         model: str,
         contents: Any,
         config: types.GenerateContentConfig,
+        *,
+        trace_id: Optional[str] = None,
+        stage: str = "vertex_generate_content",
     ) -> Any:
-        return await asyncio.get_event_loop().run_in_executor(
-            _executor,
-            lambda: client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config,
-            ),
+        started = time.monotonic()
+        async with self._vertex_concurrency:
+            response = await asyncio.get_event_loop().run_in_executor(
+                _executor,
+                lambda: client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                ),
+            )
+        logger.info(
+            "[LLMClient][%s] %s completed | model=%s | latency_ms=%s",
+            trace_id or "no-trace",
+            stage,
+            model,
+            self._elapsed_ms(started),
         )
+        return response
 
-    async def _ensure_mcp_session(self):
+    @asynccontextmanager
+    async def _mcp_session_context(
+        self, *, trace_id: Optional[str] = None
+    ) -> AsyncIterator[Any]:
         """
-        Connect to the MCP server and maintain a long-lived session.
+        Provide an MCP server/session scoped to a single request/tool loop.
+        This prevents different conversations from sharing the same stdio session.
         """
         if settings.MCP_TRANSPORT == "inprocess":
             if self._mcp_inprocess_server is not None:
-                return self._mcp_inprocess_server
+                yield self._mcp_inprocess_server
+                return
             try:
-                from app.services.aidaan.mcp.market import mcp as market_mcp
+                started = time.monotonic()
+                from app.services.aidaan.mcp.server import mcp as market_mcp
 
                 self._mcp_inprocess_server = market_mcp
-                logger.info("[LLMClient] Using in-process MCP server.")
-                return self._mcp_inprocess_server
+                logger.info(
+                    "[LLMClient][%s] Using in-process MCP server | latency_ms=%s",
+                    trace_id or "no-trace",
+                    self._elapsed_ms(started),
+                )
+                yield self._mcp_inprocess_server
+                return
             except Exception as exc:
                 logger.error("[LLMClient] In-process MCP server import failed: %s", exc)
-                return None
-
-        if self._mcp_session:
-            return self._mcp_session
+                yield None
+                return
 
         try:
+            started = time.monotonic()
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
-            from contextlib import AsyncExitStack
 
-            self._mcp_exit_stack = AsyncExitStack()
             raw_args: Any = settings.MCP_SERVER_ARGS
             if isinstance(raw_args, str):
                 mcp_args = shlex.split(raw_args) if raw_args.strip() else []
@@ -190,33 +228,28 @@ class LLMClient:
                 args=mcp_args,
             )
 
-            # Initialize stdio transport and session
-            read, write = await self._mcp_exit_stack.enter_async_context(stdio_client(server_params))
-            session = await self._mcp_exit_stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            
-            self._mcp_session = session
-            logger.info("[LLMClient] Persistent MCP session initialized.")
-            return self._mcp_session
+            async with AsyncExitStack() as exit_stack:
+                read, write = await exit_stack.enter_async_context(stdio_client(server_params))
+                session = await exit_stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                logger.info(
+                    "[LLMClient][%s] Request-scoped MCP session initialized | latency_ms=%s",
+                    trace_id or "no-trace",
+                    self._elapsed_ms(started),
+                )
+                yield session
         except Exception as exc:
-            logger.error("[LLMClient] Failed to initialize persistent MCP session: %s", exc)
-            if self._mcp_exit_stack is not None:
-                try:
-                    await self._mcp_exit_stack.aclose()
-                except Exception:
-                    pass
-            self._mcp_exit_stack = None
-            self._mcp_session = None
-            return None
+            logger.error("[LLMClient] Failed to initialize MCP session: %s", exc)
+            yield None
 
-    async def _ensure_mcp_tools(self):
+    async def _list_mcp_tools(self, session: Any, *, trace_id: Optional[str] = None):
         """
-        Fetch tools via the persistent session.
+        Fetch tools from the provided MCP session/server.
         """
         if self._mcp_tools:
             return self._mcp_tools
 
-        session = await self._ensure_mcp_session()
+        started = time.monotonic()
         if not session:
             return []
 
@@ -226,17 +259,30 @@ class LLMClient:
             else:
                 tools_resp = await session.list_tools()
                 self._mcp_tools = tools_resp.tools
-            logger.info("[LLMClient] Discovered %s tools via MCP (%s).", len(self._mcp_tools), settings.MCP_TRANSPORT)
+            logger.info(
+                "[LLMClient][%s] Discovered %s tools via MCP (%s) | latency_ms=%s",
+                trace_id or "no-trace",
+                len(self._mcp_tools),
+                settings.MCP_TRANSPORT,
+                self._elapsed_ms(started),
+            )
             return self._mcp_tools
         except Exception as exc:
             logger.error("[LLMClient] MCP tool discovery failed: %s", exc)
             return []
 
-    async def _execute_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+    async def _execute_mcp_tool(
+        self,
+        session: Any,
+        name: str,
+        arguments: Dict[str, Any],
+        *,
+        trace_id: Optional[str] = None,
+    ) -> Any:
         """
-        Execute a specific tool via the long-lived MCP session.
+        Execute a specific tool via the provided MCP session.
         """
-        session = await self._ensure_mcp_session()
+        started = time.monotonic()
         if not session:
             return {"error": "MCP session not available."}
 
@@ -244,11 +290,31 @@ class LLMClient:
             if settings.MCP_TRANSPORT == "inprocess":
                 content, meta = await session.call_tool(name, arguments)
                 if isinstance(meta, dict) and isinstance(meta.get("result"), dict):
+                    logger.info(
+                        "[LLMClient][%s] MCP tool completed | tool=%s | latency_ms=%s",
+                        trace_id or "no-trace",
+                        name,
+                        self._elapsed_ms(started),
+                    )
                     return meta["result"]
-                return self._normalize_mcp_result(content)
+                normalized = self._normalize_mcp_result(content)
+                logger.info(
+                    "[LLMClient][%s] MCP tool completed | tool=%s | latency_ms=%s",
+                    trace_id or "no-trace",
+                    name,
+                    self._elapsed_ms(started),
+                )
+                return normalized
 
             result = await session.call_tool(name, arguments)
-            return self._normalize_mcp_result(result.content)
+            normalized = self._normalize_mcp_result(result.content)
+            logger.info(
+                "[LLMClient][%s] MCP tool completed | tool=%s | latency_ms=%s",
+                trace_id or "no-trace",
+                name,
+                self._elapsed_ms(started),
+            )
+            return normalized
         except Exception as exc:
             logger.error("[LLMClient] MCP tool execution failed (%s): %s", name, exc)
             return {"error": f"Error executing tool '{name}': {exc}"}
@@ -281,7 +347,14 @@ class LLMClient:
         """
         Public wrapper for explicit MCP tool execution from agents/services.
         """
-        return await self._execute_mcp_tool(name, arguments)
+        trace_id = self._new_trace_id("mcp")
+        async with self._mcp_session_context(trace_id=trace_id) as session:
+            return await self._execute_mcp_tool(
+                session,
+                name,
+                arguments,
+                trace_id=trace_id,
+            )
 
     def _cache_key(self, prefix: str, model_name: str, payload: str) -> str:
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -422,7 +495,7 @@ class LLMClient:
         model_override: Optional[str] = None,
         retries: int = 2,
         use_mcp_tools: bool = False,
-        tool_callback: Optional[callable] = None,
+        tool_callback: Optional[Callable[[str], Any]] = None,
         response_schema: Optional[Any] = None,
         system_instruction: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -432,6 +505,8 @@ class LLMClient:
         """
         model_name = model_override or self._default_model_name
         cache_prefix = "json_tools" if use_mcp_tools else "json"
+        trace_id = self._new_trace_id("json")
+        overall_start = time.monotonic()
         
         # Determine if we need to bypass strict JSON mode due to tool availability
         # On Vertex AI, Search tools are incompatible with response_mime_type="application/json"
@@ -442,10 +517,19 @@ class LLMClient:
         cached_result = cache.get(cache_key)
         if cached_result is not None:
             self._log_usage("generate_json", prompt, cached=True)
+            logger.info(
+                "[LLMClient][%s] Cache hit | model=%s | use_mcp_tools=%s | total_ms=%s",
+                trace_id,
+                model_name,
+                use_mcp_tools,
+                self._elapsed_ms(overall_start),
+            )
             return cached_result
 
         # REDACT PII via DLP before Vertex processes it
-        prompt = dlp_client.redact_pii(prompt)
+        dlp_start = time.monotonic()
+        prompt = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, prompt)
+        logger.info("[LLMClient][%s] DLP redaction completed | latency_ms=%s", trace_id, self._elapsed_ms(dlp_start))
 
         # Helper: add JSON instruction for non-strict calls
         if use_hybrid_mode and "Return ONLY raw JSON" not in prompt:
@@ -459,9 +543,16 @@ class LLMClient:
                 tool_callback=tool_callback,
                 response_schema=response_schema,
                 system_instruction=system_instruction,
+                trace_id=trace_id,
             )
             cache.set(cache_key, result, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_json", prompt)
+            logger.info(
+                "[LLMClient][%s] generate_json completed | model=%s | path=mcp_tools | total_ms=%s",
+                trace_id,
+                model_name,
+                self._elapsed_ms(overall_start),
+            )
             return result
 
         start = time.monotonic()
@@ -480,6 +571,8 @@ class LLMClient:
                     model=model_name,
                     contents=prompt,
                     config=config,
+                    trace_id=trace_id,
+                    stage=f"generate_json.attempt_{attempt + 1}",
                 )
                 raw = (response.text or "").strip()
                 parsed = self._extract_json(raw)
@@ -488,7 +581,7 @@ class LLMClient:
                 if isinstance(parsed, dict):
                     # We might want to redact specific fields or the whole JSON as string
                     parsed_str = json.dumps(parsed)
-                    redacted_str = dlp_client.redact_pii(parsed_str)
+                    redacted_str = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, parsed_str)
                     parsed = json.loads(redacted_str)
 
                 cache.set(cache_key, parsed, expire=settings.LLM_CACHE_EXPIRE)
@@ -511,7 +604,8 @@ class LLMClient:
             except Exception as exc:
                 last_error = exc
                 logger.warning(
-                    "[LLMClient] generate_json failed (attempt %s/%s): %s",
+                    "[LLMClient][%s] generate_json failed (attempt %s/%s): %s",
+                    trace_id,
                     attempt + 1,
                     retries,
                     exc,
@@ -519,10 +613,10 @@ class LLMClient:
                 if attempt < retries - 1:
                     # Exponential Backoff with Jitter
                     delay = (2 ** attempt) + (time.time() % 1)
-                    logger.info("[LLMClient] Retrying generate_json in %0.2fs due to: %s", delay, exc)
+                    logger.info("[LLMClient][%s] Retrying generate_json in %0.2fs due to: %s", trace_id, delay, exc)
                     await asyncio.sleep(delay)
                 else:
-                    logger.error("[LLMClient] generate_json exhausted retries: %s", last_error)
+                    logger.error("[LLMClient][%s] generate_json exhausted retries: %s", trace_id, last_error)
                     audit_logger.log_llm_transaction(
                         prompt=prompt,
                         response=None,
@@ -537,94 +631,49 @@ class LLMClient:
         prompt: str,
         model_name: str,
         retries: int,
-        tool_callback: Optional[callable] = None,
+        tool_callback: Optional[Callable[[str], Any]] = None,
         response_schema: Optional[Any] = None,
         system_instruction: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        mcp_tools = await self._ensure_mcp_tools()
-        if not mcp_tools:
-            return {"error": "No MCP tools available"}
         client = self._ensure_client()
         if client is None:
             return self._vertex_error_payload()
-
-        declarations = []
-        for tool in mcp_tools:
-            schema = self._clean_schema(tool.inputSchema.copy())
-            declarations.append(
-                types.FunctionDeclaration(
-                    name=tool.name,
-                    description=tool.description or f"MCP tool: {tool.name}",
-                    parameters_json_schema=schema,
-                )
-            )
-
-        # PRIORITY FIX: We avoid mixing built-in server tools (search, etc.) with 
-        # custom function declarations, as the API often rejects multiple tool types 
-        # unless they are all search tools.
-        tool_config = types.GenerateContentConfig(
-            temperature=settings.VERTEX_AI_TEMPERATURE,
-            max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
-            tools=[types.Tool(function_declarations=declarations)],
-        )
-
-        user_prompt_content = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=prompt)],
-        )
         last_error: Optional[Exception] = None
         start = time.monotonic()
 
         for attempt in range(retries):
-            contents = [user_prompt_content]
-            try:
-                # Update tool_config with system_instruction before initial turn
-                tool_config.system_instruction = system_instruction
+            async with self._mcp_session_context(trace_id=trace_id) as session:
+                if not session:
+                    return {"error": "MCP session not available"}
 
-                response = await self._run_generate_content(
-                    client=client,
-                    model=model_name,
-                    contents=contents,
-                    config=tool_config,
+                mcp_tools = await self._list_mcp_tools(session, trace_id=trace_id)
+                if not mcp_tools:
+                    return {"error": "No MCP tools available"}
+
+                declarations = []
+                for tool in mcp_tools:
+                    schema = self._clean_schema(tool.inputSchema.copy())
+                    declarations.append(
+                        types.FunctionDeclaration(
+                            name=tool.name,
+                            description=tool.description or f"MCP tool: {tool.name}",
+                            parameters_json_schema=schema,
+                        )
+                    )
+
+                tool_config = types.GenerateContentConfig(
+                    temperature=settings.VERTEX_AI_TEMPERATURE,
+                    max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
+                    tools=[types.Tool(function_declarations=declarations)],
                 )
 
-                max_turns = 8 # Increased turn limit for complex deep-dives
-                turn = 0
-                while response.function_calls and turn < max_turns:
-                    turn += 1
-                    function_call_content = response.candidates[0].content
-                    contents.append(function_call_content)
-
-                    # PARALLEL EXECUTION: Fire all tool calls suggested in this turn at once.
-                    tasks = []
-                    for function_call in response.function_calls:
-                        tool_name = function_call.name
-                        tool_args = dict(function_call.args or {})
-                        logger.info(
-                            "[LLMClient] [%s/%s] Executing tool (Parallel): %s",
-                            turn,
-                            max_turns,
-                            tool_name,
-                        )
-                        if tool_callback:
-                            await tool_callback(tool_name)
-                        tasks.append(self._execute_mcp_tool(tool_name, tool_args))
-
-                    # Increase concurrency monitoring
-                    results = await asyncio.gather(*tasks)
-
-                    tool_parts = []
-                    for function_call, tool_result in zip(response.function_calls, results):
-                        tool_parts.append(
-                            types.Part.from_function_response(
-                                name=function_call.name,
-                                response={"result": tool_result},
-                            )
-                        )
-
-                    contents.append(types.Content(role="tool", parts=tool_parts))
-
-                    # Handle system_instruction within tool_config if needed
+                user_prompt_content = types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=prompt)],
+                )
+                contents = [user_prompt_content]
+                try:
                     tool_config.system_instruction = system_instruction
 
                     response = await self._run_generate_content(
@@ -632,58 +681,129 @@ class LLMClient:
                         model=model_name,
                         contents=contents,
                         config=tool_config,
+                        trace_id=trace_id,
+                        stage=f"mcp.initial_turn.attempt_{attempt + 1}",
                     )
 
-                # Final Synthesis Turn override logic:
-                if not response.function_calls and response_schema:
-                    config = self._build_json_config(schema=response_schema, system_instruction=system_instruction)
-                    response = await self._run_generate_content(
-                        client=client,
-                        model=model_name,
-                        contents=contents,
-                        config=config,
+                    max_turns = 8
+                    turn = 0
+                    while response.function_calls and turn < max_turns:
+                        turn += 1
+                        batch_start = time.monotonic()
+                        function_call_content = response.candidates[0].content
+                        contents.append(function_call_content)
+
+                        tasks = []
+                        for function_call in response.function_calls:
+                            tool_name = function_call.name
+                            tool_args = dict(function_call.args or {})
+                            logger.info(
+                                "[LLMClient][%s] [%s/%s] Executing tool (Parallel): %s",
+                                trace_id or "no-trace",
+                                turn,
+                                max_turns,
+                                tool_name,
+                            )
+                            if tool_callback:
+                                await tool_callback(tool_name)
+                            tasks.append(
+                                self._execute_mcp_tool(
+                                    session,
+                                    tool_name,
+                                    tool_args,
+                                    trace_id=trace_id,
+                                )
+                            )
+
+                        results = await asyncio.gather(*tasks)
+                        logger.info(
+                            "[LLMClient][%s] Tool batch completed | turn=%s | tool_calls=%s | latency_ms=%s",
+                            trace_id or "no-trace",
+                            turn,
+                            len(tasks),
+                            self._elapsed_ms(batch_start),
+                        )
+
+                        tool_parts = []
+                        for function_call, tool_result in zip(response.function_calls, results):
+                            tool_parts.append(
+                                types.Part.from_function_response(
+                                    name=function_call.name,
+                                    response={"result": tool_result},
+                                )
+                            )
+
+                        contents.append(types.Content(role="tool", parts=tool_parts))
+                        tool_config.system_instruction = system_instruction
+
+                        response = await self._run_generate_content(
+                            client=client,
+                            model=model_name,
+                            contents=contents,
+                            config=tool_config,
+                            trace_id=trace_id,
+                            stage=f"mcp.followup_turn_{turn}",
+                        )
+
+                    if not response.function_calls and response_schema:
+                        config = self._build_json_config(
+                            schema=response_schema,
+                            system_instruction=system_instruction,
+                        )
+                        response = await self._run_generate_content(
+                            client=client,
+                            model=model_name,
+                            contents=contents,
+                            config=config,
+                            trace_id=trace_id,
+                            stage="mcp.final_synthesis",
+                        )
+
+                    raw = (response.text or "").strip()
+                    if not raw:
+                        raise ValueError("Model returned no text after MCP tool usage")
+
+                    parsed = self._extract_json(raw)
+
+                    if isinstance(parsed, dict):
+                        parsed_str = json.dumps(parsed)
+                        redacted_str = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, parsed_str)
+                        parsed = json.loads(redacted_str)
+
+                    latency_ms = int((time.monotonic() - start) * 1000)
+                    logger.debug(
+                        "[LLMClient] generate_json_with_mcp_tools OK | model=%s | latency=%sms",
+                        model_name,
+                        latency_ms,
                     )
-
-                raw = (response.text or "").strip()
-                if not raw:
-                    raise ValueError("Model returned no text after MCP tool usage")
-
-                parsed = self._extract_json(raw)
-                
-                # REDACT PII from the response
-                if isinstance(parsed, dict):
-                    parsed_str = json.dumps(parsed)
-                    redacted_str = dlp_client.redact_pii(parsed_str)
-                    parsed = json.loads(redacted_str)
-
-                latency_ms = int((time.monotonic() - start) * 1000)
-                logger.debug(
-                    "[LLMClient] generate_json_with_mcp_tools OK | model=%s | latency=%sms",
-                    model_name,
-                    latency_ms,
-                )
-                audit_logger.log_llm_transaction(
-                    prompt=prompt,
-                    response=parsed,
-                    model_id=model_name,
-                    latency_ms=latency_ms,
-                    status="SUCCESS"
-                )
-                return parsed
-            except Exception as exc:
-                last_error = exc
-                is_429 = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
-                logger.warning(
-                    "[LLMClient] MCP tool loop failed (attempt %s/%s) | is_429=%s: %s",
-                    attempt + 1,
-                    retries,
-                    is_429,
-                    exc,
-                )
-                if attempt < retries - 1:
-                    # Exponential backoff for tool loops
-                    delay = (2 ** attempt) + (time.time() % 1)
-                    await asyncio.sleep(delay)
+                    audit_logger.log_llm_transaction(
+                        prompt=prompt,
+                        response=parsed,
+                        model_id=model_name,
+                        latency_ms=latency_ms,
+                        status="SUCCESS"
+                    )
+                    return parsed
+                except Exception as exc:
+                    last_error = exc
+                    is_429 = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+                    logger.warning(
+                        "[LLMClient][%s] MCP tool loop failed (attempt %s/%s) | is_429=%s | elapsed_ms=%s: %s",
+                        trace_id or "no-trace",
+                        attempt + 1,
+                        retries,
+                        is_429,
+                        self._elapsed_ms(start),
+                        exc,
+                    )
+                    if attempt < retries - 1:
+                        delay = (2 ** attempt) + (time.time() % 1)
+                        logger.info(
+                            "[LLMClient][%s] MCP tool loop retry sleep | delay_s=%0.2f",
+                            trace_id or "no-trace",
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
 
         return {"error": str(last_error) if last_error else "Vertex AI tool loop failed"}
 
@@ -698,7 +818,7 @@ class LLMClient:
         model_name = model_override or self._default_model_name
  
         # REDACT PII via DLP before Vertex processes it
-        prompt = dlp_client.redact_pii(prompt)
+        prompt = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, prompt)
 
         cache_key = self._cache_key("text", model_name, prompt)
         cached_result = cache.get(cache_key)
@@ -720,7 +840,7 @@ class LLMClient:
             text = (response.text or "").strip()
             
             # REDACT PII from the response
-            text = dlp_client.redact_pii(text)
+            text = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, text)
 
             cache.set(cache_key, text, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_text", prompt)

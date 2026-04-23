@@ -7,13 +7,12 @@ import time
 from typing import Any, Dict, Optional
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+
+from app.services.aidaan.mcp.shared import mcp
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp_alphavantage_pro")
-
-mcp = FastMCP("Alpha Vantage Professional Server")
 
 
 BASE_URL = "https://www.alphavantage.co/query"
@@ -577,7 +576,7 @@ async def get_crypto_daily_series(
     # Values are usually duplicated in both base and quote currency; we return quote-currency keys when present.
     return {
         "symbol": symbol.upper(),
-        "market": market.uper(),
+        "market": market.upper(),
         "last_refreshed": raw.get("Meta Data", {}).get("6. Last Refreshed") or raw.get("Meta Data", {}).get("5. Last Refreshed"),
         "data": [
             {

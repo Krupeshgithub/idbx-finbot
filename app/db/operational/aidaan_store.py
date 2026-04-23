@@ -1,0 +1,238 @@
+"""
+Read/write access layer for AIDAAN sidecar tables.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+
+from app.core.config.settings import settings
+from app.db.operational.base import count_rows, fetch_all, insert_row
+
+
+class AidaanStoreRepository:
+    def __init__(self) -> None:
+        self.schema = settings.DB_AIDAAN_SCHEMA
+
+    def _new_id(self) -> str:
+        return str(uuid4())
+
+    def get_recent_messages(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+        rows = fetch_all(
+            session,
+            schema=self.schema,
+            table_name="messages",
+            filters={"conversation_id": conversation_id},
+            order_by="created_at",
+            order_desc=True,
+            limit=limit,
+        )
+        rows.reverse()
+        return rows
+
+    def get_recent_rfq_drafts(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+        return fetch_all(
+            session,
+            schema=self.schema,
+            table_name="rfq_drafts",
+            filters={"conversation_id": conversation_id},
+            order_by="created_at",
+            order_desc=True,
+            limit=limit,
+        )
+
+    def get_recent_tool_invocations(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+        return fetch_all(
+            session,
+            schema=self.schema,
+            table_name="tool_invocations",
+            filters={"conversation_id": conversation_id},
+            order_by="created_at",
+            order_desc=True,
+            limit=limit,
+        )
+
+    def get_recent_audit_events(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+        return fetch_all(
+            session,
+            schema=self.schema,
+            table_name="audit_events",
+            filters={"conversation_id": conversation_id},
+            order_by="created_at",
+            order_desc=True,
+            limit=limit,
+        )
+
+    def ensure_conversation(
+        self,
+        session: Session,
+        *,
+        conversation_id: str,
+        user_id: Optional[str],
+        desk_id: Optional[str],
+        channel: str,
+        context: Optional[Dict[str, Any]] = None,
+        title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        existing = fetch_all(
+            session,
+            schema=self.schema,
+            table_name="conversations",
+            filters={"id": conversation_id},
+            limit=1,
+        )
+        now = datetime.utcnow()
+        if existing:
+            return existing[0]
+
+        return insert_row(
+            session,
+            schema=self.schema,
+            table_name="conversations",
+            values={
+                "id": conversation_id,
+                "user_id": user_id,
+                "desk_id": desk_id,
+                "channel": channel,
+                "title": title,
+                "status": "active",
+                "context_json": context or {},
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+
+    def store_message(
+        self,
+        session: Session,
+        *,
+        conversation_id: str,
+        role: str,
+        content: str,
+        agent_name: Optional[str] = None,
+        model_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return insert_row(
+            session,
+            schema=self.schema,
+            table_name="messages",
+            values={
+                "id": self._new_id(),
+                "conversation_id": conversation_id,
+                "role": role,
+                "content": content,
+                "agent_name": agent_name,
+                "model_name": model_name,
+                "metadata_json": metadata or {},
+                "created_at": datetime.utcnow(),
+            },
+        )
+
+    def store_rfq_draft(
+        self,
+        session: Session,
+        *,
+        conversation_id: Optional[str],
+        user_id: Optional[str],
+        instrument: Optional[str],
+        notional: Optional[float],
+        tenor: Optional[str],
+        settlement: Optional[str],
+        payload: Dict[str, Any],
+        status: str = "draft_prepared",
+        requires_human_confirm: bool = True,
+    ) -> Dict[str, Any]:
+        now = datetime.utcnow()
+        return insert_row(
+            session,
+            schema=self.schema,
+            table_name="rfq_drafts",
+            values={
+                "id": self._new_id(),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "status": status,
+                "instrument": instrument,
+                "notional": notional,
+                "tenor": tenor,
+                "settlement": settlement,
+                "payload_json": payload,
+                "requires_human_confirm": requires_human_confirm,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+
+    def store_tool_invocation(
+        self,
+        session: Session,
+        *,
+        conversation_id: Optional[str],
+        user_id: Optional[str],
+        tool_name: str,
+        arguments: Dict[str, Any],
+        result: Dict[str, Any],
+        status: str = "completed",
+    ) -> Dict[str, Any]:
+        return insert_row(
+            session,
+            schema=self.schema,
+            table_name="tool_invocations",
+            values={
+                "id": self._new_id(),
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "tool_name": tool_name,
+                "arguments_json": arguments,
+                "result_json": result,
+                "status": status,
+                "created_at": datetime.utcnow(),
+            },
+        )
+
+    def store_audit_event(
+        self,
+        session: Session,
+        *,
+        conversation_id: Optional[str],
+        event_type: str,
+        summary: str,
+        severity: str = "info",
+        actor: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return insert_row(
+            session,
+            schema=self.schema,
+            table_name="audit_events",
+            values={
+                "id": self._new_id(),
+                "conversation_id": conversation_id,
+                "event_type": event_type,
+                "severity": severity,
+                "actor": actor,
+                "summary": summary,
+                "payload_json": payload or {},
+                "created_at": datetime.utcnow(),
+            },
+        )
+
+    def get_table_counts(self, session: Session) -> Dict[str, int]:
+        return {
+            table_name: count_rows(session, schema=self.schema, table_name=table_name)
+            for table_name in [
+                "desks",
+                "desk_memberships",
+                "desk_limits",
+                "counterparties",
+                "conversations",
+                "messages",
+                "rfq_drafts",
+                "tool_invocations",
+                "audit_events",
+            ]
+        }

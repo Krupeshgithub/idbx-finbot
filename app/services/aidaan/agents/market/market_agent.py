@@ -1,123 +1,57 @@
 """
-Institutional Market Analyst Agent - AIDAAN Intelligence Layer
-==============================================================
-The MarketAgent specializes in synthesizing deep financial insights using 
-exhaustive real-time data sources (Alpha Vantage).
-
-Key Features:
-- Multi-tool orchestration (Economics, FX, Commodities, Technicals).
-- Agentic multi-turn synthesis for complex queries.
-- Bloomberg-style professional report generation.
+Institutional market agent for Vertex-first market orchestration.
 """
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.services.aidaan.core.base import BaseAgent
-from app.schemas.aidaan import AidaanMessageResponse
-from app.core.prompts import Prompts
 from app.core.config.settings import settings
+from app.core.prompts import Prompts
+from app.schemas.aidaan import AidaanMessageResponse
+from app.services.aidaan.core.base import BaseAgent
 
 logger = logging.getLogger(__name__)
 
 
 class MarketAgent(BaseAgent):
     """
-    Agentic analyst capable of navigating complex market data ecosystems 
-    to provide synthesized financial reports.
+    Vertex-first market agent.
+
+    This agent intentionally avoids manual ticker aliases and heuristic
+    fast-paths so symbol resolution, tool choice, and response synthesis
+    remain model-driven.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
-        Initialize with a model capable of complex tool orchestration.
+        Initialize the market agent with the default market model.
         """
-        super().__init__(
-            name="market",
-            model_name=settings.VERTEX_AI_MODEL_NAME, # Switch back to High-Speed Flash
-        )
+        super().__init__(name="market", model_name=settings.VERTEX_AI_MODEL_NAME)
 
     async def handle_message(
-        self, 
-        text: str, 
-        conversation_id: str, 
+        self,
+        text: str,
+        conversation_id: str,
         context: Optional[Dict[str, Any]] = None,
         tool_callback: Optional[callable] = None,
     ) -> AidaanMessageResponse:
         """
-        Processes market queries by discovering and invoking appropriate tools.
+        Run a full Vertex-driven market workflow for the user query.
 
-        Args:
-            text: Market-related query (e.g., "Analyze Nvidia's RSI vs its peers").
-            conversation_id: Session ID for state tracking.
-            context: Additional market context.
-
-        Returns:
-            AidaanMessageResponse: A synthesized, professional financial report.
+        The model is responsible for:
+        - identifying the correct instrument or company
+        - choosing the relevant MCP tools
+        - synthesizing the final trader-facing answer
         """
-        logger.info(f"[MarketAgent] Analyzing market query: {text}")
+        logger.info("[MarketAgent] Analyzing market query via Vertex-first orchestration: %s", text)
         context = context or {}
-        
-        # Externalized professional orchestration prompt
-        orchestration_prompt = Prompts.MARKET_ORCHESTRATION.format(text=text)
 
-        # --- Heuristic Fast-Path for simple quotes ---
-        if len(text.split()) < 4 and any(k in text.lower() for k in ["price", "quote", "price of", "level"]):
-             logger.info("[MarketAgent] Triggering Heuristic FAST-PATH for simple quote.")
-             if tool_callback: await tool_callback("get_stock_quote")
-             
-             # Fetch data directly bypassing LLM turn 1
-             import re
-             ticker_match = re.search(r'\b[A-Za-z]{1,5}\b', text.upper())
-             symbol = ticker_match.group(0) if ticker_match else text.split()[0].upper()
-             
-             data = await self.llm.call_mcp_tool("get_stock_quote", {"symbol": symbol})
-             
-             # Even if error, if it's a rate limit, the tool now returns simulated data
-             # Check for simulation note or valid data
-             price = data.get("price")
-             if price:
-                 try:
-                     change_val = float(str(data.get("change_percent", "0")).strip('%'))
-                 except:
-                     change_val = 0.0
-                     
-                 change_str = data.get("change_percent", "0%")
-                 reply = (
-                     f"### [Direct Answer]\n\n"
-                     f"| Metric | Value |\n"
-                     f"| :--- | :--- |\n"
-                     f"| **Current Price** | {price} |\n"
-                     f"| **Change (%)** | {change_str} |\n"
-                     f"| **Volume** | {data.get('volume', 'N/A')} |\n"
-                     f"| **Previous Close** | {data.get('previous_close', 'N/A')} |\n\n"
-                     f"### [Market Insight]\n"
-                     f"Institutional flows for **{symbol}** are currently { 'skewed to the upside' if change_val > 0 else 'under pressure' }. "
-                     f"Volume of {data.get('volume', 'N/A')} indicates {'active' if data.get('volume') and str(data.get('volume')).replace(',','').isdigit() and int(str(data.get('volume')).replace(',','')) > 1000000 else 'moderate'} participation from large-scale desk accounts.\n\n"
-                     f"### [Trade Implication]\n"
-                     f"Positioning suggests a **{'bullish' if change_val > 0 else 'cautious'}** bias. "
-                     f"Traders should monitor for support at {data.get('low', 'N/A')} and resistance at {data.get('high', 'N/A')}.\n\n"
-                     f"### [Optional Follow-up]\n"
-                     f"Would you like to analyze **{symbol}'s** 10-day price trend or implied volatility levels?"
-                 )
-                 if "note" in data:
-                     reply += f"\n\n> [!NOTE]\n> {data['note']}"
-                       
-                 return self.build_message_response(
-                     reply=reply, 
-                     bullets=[f"Ticker: {symbol}", f"Price: {price}"], 
-                     conversation_id=conversation_id, 
-                     model_info={"agent": self.name, "llm": "PREMIUM-FASTPATH"}
-                 )
+        orchestration_prompt = Prompts.MARKET_ORCHESTRATION.format(text=text)
+        model_name = settings.VERTEX_AI_REASONING_MODEL_NAME
+        logger.info("[MarketAgent] Routing to reasoning model: %s", model_name)
 
         try:
-            # Determine if this is a deep-dive query (requires higher accuracy/reasoning)
-            deep_dive_keywords = ["analyze", "identify", "compare", "justify", "evaluate", "trend", "phase", "overbought", "oversold"]
-            is_deep_dive = any(k in text.lower() for k in deep_dive_keywords)
-            model_name = settings.VERTEX_AI_REASONING_MODEL_NAME if is_deep_dive else self._model_name
-            
-            logger.info(f"[MarketAgent] Routing to model: {model_name} (Deep-Dive: {is_deep_dive})")
-
-            # Execute agentic loop with tool discovery enabled
             response_data = await self.generate_json_response(
                 orchestration_prompt,
                 conversation_id=conversation_id,
@@ -126,35 +60,40 @@ class MarketAgent(BaseAgent):
                 use_mcp_tools=True,
                 tool_callback=tool_callback,
                 response_schema=Prompts.STANDARD_RESPONSE_SCHEMA,
-                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Senior Interbank analyst. You MUST gather all relevant financial metrics (OHLCV, Fundamentals, Technicals, News) before providing a final synthesis. Use clean tables."
+                system_instruction=(
+                    Prompts.TRADER_SYSTEM_INSTRUCTION
+                    + "\nRole: Senior Interbank analyst."
+                    + " Resolve the correct ticker or instrument from the user's wording before using tools."
+                    + " Use MCP tools to validate the symbol and gather only the data required for the question."
+                    + " For simple quote requests, keep the answer concise and accurate."
+                    + " For historical requests, prefer historical series tools over spot quote tools."
+                ),
             )
-            
             return self.build_message_response(
                 reply=response_data.get("reply", "Market data analysis complete."),
                 bullets=response_data.get("bullets", []),
                 conversation_id=conversation_id,
                 model_info=self.get_model_info(model_override=model_name),
             )
-        except Exception as e:
+        except Exception as exc:
             return self.build_error_response(
-                reply="I encountered an issue while performing the market deep-dive. Please verify the symbol or metric.",
+                reply="I encountered an issue while performing the market analysis. Please verify the instrument or request.",
                 conversation_id=conversation_id,
-                error=e,
-                model_info=self.get_model_info(),
+                error=exc,
+                model_info=self.get_model_info(model_override=model_name),
             )
 
     def get_capabilities(self) -> List[str]:
         """
-        Returns the scope of market analysis capabilities.
+        Return the market coverage supported by the agent.
         """
         return [
-            "macro_economics_analysis", 
-            "commodity_tracking", 
-            "fx_monitoring", 
-            "technical_analysis", 
-            "fundamental_deep_dives"
+            "market_quotes",
+            "historical_price_series",
+            "technical_analysis",
+            "fundamental_analysis",
+            "multi_tool_market_orchestration",
         ]
 
 
-# Singleton instance
 market_agent = MarketAgent()

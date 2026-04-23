@@ -86,6 +86,22 @@ class Prompts:
         "required": ["format", "reply"]
     }
 
+    OPERATIONAL_RESPONSE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "reply": {
+                "type": "string",
+                "description": "Direct institutional answer grounded in tool output and operational records."
+            },
+            "bullets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Specific facts, ids, limits, timestamps, or workflow notes."
+            }
+        },
+        "required": ["reply"]
+    }
+
     INTENT_SCHEMA = {
         "type": "object",
         "properties": {
@@ -345,6 +361,25 @@ class Prompts:
     Return RAW JSON ONLY.
     """
 
+    RISK_REQUEST_PARSER = """
+    You are AIDAAN's risk request parser.
+    Extract the most likely instrument and requested notional from the user's message.
+
+    Text: "{text}"
+
+    Return RAW JSON ONLY:
+    {{
+      "instrument": "DEFAULT|SONIA|SOFR|EUR/USD|GBP/USD|UK GILTS|BOND|FX",
+      "position_size": 0,
+      "confidence": 0.0
+    }}
+
+    Rules:
+    - If no reliable instrument is present, return "DEFAULT".
+    - Convert shorthand such as 25m or 1.5bn into base units.
+    - If no notional is stated, return null for position_size.
+    """
+
     RISK_SYNTHESIS = """
     You are AIDAAN's Professional Risk Analyst.
     Summarize the current risk metrics for the user.
@@ -375,6 +410,25 @@ class Prompts:
     {{
         "reply": "[Direct Answer] \n[Context Detail]",
         "bullets": ["Specific operational record 1", "Specific operational record 2"]
+    }}
+    """
+
+    OPERATIONAL_ORCHESTRATION = """
+    User Query: "{text}"
+
+    You are AIDAAN's Operational Data Specialist for IDBX.
+
+    Instructions:
+    1. Use MCP tools to gather facts from canonical public data and aidaan-side conversation records.
+    2. Prefer public schema records for user, desk, limit, and counterparty context.
+    3. Prefer aidaan schema records for conversation memory, RFQ drafts, tool traces, and audit history.
+    4. Do not invent records. If the tool output is empty, say that cleanly.
+    5. Keep the tone premium and operational, not academic.
+
+    Return JSON:
+    {{
+      "reply": "[Direct Answer]\\n[Operational Detail]",
+      "bullets": ["Fact 1", "Fact 2", "Fact 3"]
     }}
     """
 
@@ -411,11 +465,14 @@ class Prompts:
     GREETING_SYNTHESIS = """
     Generate a professional institutional greeting.
     User: {username}
+    Desk: {desk_name}
+    Role: {desk_title}
     Message: "{text}"
     Current soft limit: {soft_limit}
 
     Instructions:
     - Welcome the user by name.
+    - If desk context is available, acknowledge it naturally.
     - Mention their current EUR/USD soft limit professionally.
     - Sound like a premium trading assistant.
 

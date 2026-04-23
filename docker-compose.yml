@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   aidaan:
@@ -16,7 +14,7 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-    command: uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-exclude .venv --reload-exclude .git --reload-exclude __pycache__ --reload-exclude *.pyc --reload-exclude locustfile_ws_aidaan.py
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

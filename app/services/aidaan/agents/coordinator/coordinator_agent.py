@@ -27,6 +27,7 @@ from app.services.aidaan.agents.risk.risk_agent import risk_agent
 from app.services.aidaan.agents.order.order_agent import order_agent
 from app.services.aidaan.agents.greeting.greeting_agent import greeting_agent
 from app.services.aidaan.agents.context.context_agent import context_agent
+from app.services.aidaan.agents.operational.operational_agent import operational_agent
 from app.services.aidaan.runtime_context import runtime_context_service
 
 # Register agents with the global registry
@@ -35,6 +36,7 @@ registry.register("risk", risk_agent)
 registry.register("order", order_agent)
 registry.register("greeting", greeting_agent)
 registry.register("context", context_agent)
+registry.register("operational", operational_agent)
 
 logger = logging.getLogger(__name__)
 
@@ -118,42 +120,22 @@ class CoordinatorAgent(BaseAgent):
         Returns:
             The ID of the target agent or None.
         """
-        lowered = text.lower()
-        
-        # --- 1. Comprehensive Market & Risk Priority (Longer queries) ---
-        market_keywords = [
-            "price", "market", "gold", "oil", "inflation", "gdp", "apple", "google", "meta", "tesla", 
-            "microsoft", "amazon", "nvidia", "aapl", "goog", "msft", "tsla", "nvda", "index", "sp500", 
-            "nasdaq", "dow", "ftse", "dax", "nifty", "dividend", "yield", "earnings", "eps", "pe ratio", 
-            "revenue", "balance sheet", "income statement", "cash flow", "commodity", "crude", "silver", "news", "sentiment"
-        ]
-        risk_keywords = ["risk", "dv01", "pv01", "limit", "exposure", "var", "stress", "compliance"]
-        
-        # If query is substantial, check market/risk keywords first to avoid false-positive greeting triggers
-        if len(lowered.split()) > 3:
-            if any(k in lowered for k in market_keywords):
-                return "market"
-            if any(k in lowered for k in risk_keywords):
-                return "risk"
+        lowered = text.strip().lower()
 
-        # --- 2. Heuristics (Token Saving / High Speed) ---
-        if any(k in lowered for k in ["hi", "hello", "good morning", "hey", "greeting"]):
+        # --- Primary Path: Heuristic-first routing (0ms latency) ---
+        if lowered in {"hi", "hello", "hey", "good morning", "good evening", "good afternoon"}:
             return "greeting"
-        
-        # fallback keywords for short queries
-        if any(k in lowered for k in market_keywords):
-            return "market"
             
-        if any(k in lowered for k in risk_keywords):
-            return "risk"
-            
-        if any(k in lowered for k in ["stage", "rfq", "buy", "sell", "sonia", "sofr", "order", "execution", "quote"]):
+        # Basic keyword matching for obvious intents to save LLM calls
+        if lowered.startswith("stage ") or lowered.startswith("rfq ") or lowered.startswith("buy ") or lowered.startswith("sell "):
             return "order"
-            
-        if any(k in lowered for k in ["history", "previous", "earlier", "desk", "profile", "counterparty", "context", "session", "last question", "memory"]):
-            return "context"
+        if any(k in lowered for k in ["dv01", "pv01", "var 95", "stress test"]):
+            return "risk"
+        if any(k in lowered for k in ["my history", "my previous", "audit log"]):
+            return "operational"
 
-        # --- LLM Intent Check ---
+        # --- Secondary Path: Fast LLM intent routing ---
+        # Using gemini-1.5-flash-8b as it is extremely fast and perfect for simple classification
         prompt = Prompts.COORDINATOR_ROUTER.format(text=text)
         try:
             parsed = await self.generate_json_response(
@@ -161,11 +143,22 @@ class CoordinatorAgent(BaseAgent):
                 conversation_id=conversation_id,
                 username=username,
                 response_schema=Prompts.INTENT_SCHEMA,
-                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Intent Classifier"
+                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Intent Classifier",
+                model_override="gemini-1.5-flash-8b"
             )
-            return parsed.get("intent")
+            intent = parsed.get("intent")
+            if intent == "context":
+                return "operational"
+            return intent
         except Exception as e:
             logger.warning(f"[Coordinator] LLM routing failed: {e}")
+            # --- Ultimate fallback ---
+            if any(k in lowered for k in ["risk", "compliance"]):
+                return "risk"
+            if any(k in lowered for k in ["price", "market", "stock", "news", "quote"]):
+                return "market"
+            if any(k in lowered for k in ["order", "execution"]):
+                return "order"
             return None
 
     def get_capabilities(self) -> List[str]:

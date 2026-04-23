@@ -7,14 +7,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from app.core.config.settings import settings
-from app.db.repositories import (
-    get_recent_audit_events,
-    get_recent_messages,
-    get_recent_rfq_drafts,
-    get_recent_tool_invocations,
-    get_user_operational_bundle,
-)
-from app.db.session import get_db_session
+from app.db.operational.service import operational_data_service
 
 
 def _json_dump(payload: Any) -> str:
@@ -27,14 +20,10 @@ class RuntimeContextService:
     """
 
     def get_recent_history(self, conversation_id: Optional[str]) -> List[Dict[str, Any]]:
-        if not conversation_id:
-            return []
-        with get_db_session() as session:
-            return get_recent_messages(
-                session,
-                conversation_id=conversation_id,
-                limit=settings.AIDAAN_HISTORY_WINDOW,
-            )
+        return operational_data_service.get_recent_history(
+            conversation_id,
+            limit=settings.AIDAAN_HISTORY_WINDOW,
+        )
 
     def get_operational_context(
         self,
@@ -45,32 +34,18 @@ class RuntimeContextService:
         payload: Dict[str, Any] = {
             "user": None,
             "desk": None,
+            "desk_membership": None,
             "desk_limits": [],
             "counterparties": [],
             "recent_rfq_drafts": [],
             "recent_tool_invocations": [],
             "recent_audit_events": [],
+            "source_schema": None,
         }
-        with get_db_session() as session:
-            if username:
-                bundle = get_user_operational_bundle(session, username=username)
-                payload.update(bundle)
-            if conversation_id:
-                payload["recent_rfq_drafts"] = get_recent_rfq_drafts(
-                    session,
-                    conversation_id=conversation_id,
-                    limit=5,
-                )
-                payload["recent_tool_invocations"] = get_recent_tool_invocations(
-                    session,
-                    conversation_id=conversation_id,
-                    limit=5,
-                )
-                payload["recent_audit_events"] = get_recent_audit_events(
-                    session,
-                    conversation_id=conversation_id,
-                    limit=5,
-                )
+        if username:
+            payload.update(operational_data_service.get_operational_snapshot(username))
+        if conversation_id:
+            payload.update(operational_data_service.get_conversation_bundle(conversation_id, limit=5))
         return payload
 
     def build_prompt_context(
@@ -111,4 +86,3 @@ class RuntimeContextService:
 
 
 runtime_context_service = RuntimeContextService()
-

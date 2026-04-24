@@ -15,6 +15,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 import time
+import re
 
 from app.services.aidaan.core.base import BaseAgent, registry
 from app.schemas.aidaan import AidaanMessageResponse
@@ -53,6 +54,348 @@ class CoordinatorAgent(BaseAgent):
         super().__init__(name="coordinator", model_name=settings.VERTEX_AI_MODEL_NAME)
 
     @staticmethod
+    def _default_routing_decision(intent: str, reason: str, **overrides: Any) -> Dict[str, Any]:
+        decision = {
+            "intent": intent,
+            "sub_intent": "general",
+            "confidence": 0.9,
+            "control_signal": "none",
+            "is_follow_up": False,
+            "is_history_query": False,
+            "is_standalone_greeting": False,
+            "reason": reason,
+        }
+        decision.update(overrides)
+        return decision
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """
+        Normalize user text for lightweight heuristic checks.
+        """
+        lowered = text.strip().lower()
+        compact = re.sub(r"(.)\1{2,}", r"\1", lowered)
+        compact = re.sub(r"\s+", " ", compact).strip()
+        return compact
+
+    def _is_greeting_phrase(self, compact_text: str) -> bool:
+        """
+        Detect standalone greeting variants without paying an LLM routing cost.
+
+        Supports common address forms such as "hello aidaan" or "hi bot"
+        while avoiding longer conversational turns that should go through
+        normal routing.
+        """
+        greeting_set = {
+            "hi",
+            "hello",
+            "hey",
+            "good morning",
+            "good evening",
+            "good afternoon",
+        }
+        greeting_prefixes = (
+            "hi ",
+            "hello ",
+            "hey ",
+            "good morning ",
+            "good evening ",
+            "good afternoon ",
+        )
+        assistant_names = {"aidaan", "bot", "assistant", "team"}
+
+        if compact_text in greeting_set:
+            logger.info("[Coordinator] Greeting heuristic matched exact phrase | text=%s", compact_text)
+            return True
+
+        if compact_text.startswith(greeting_prefixes):
+            trailing_tokens = compact_text.split()[1:]
+            if trailing_tokens and all(token in assistant_names for token in trailing_tokens):
+                logger.info(
+                    "[Coordinator] Greeting heuristic matched addressed phrase | text=%s",
+                    compact_text,
+                )
+                return True
+
+        return False
+
+    def _is_explicit_fresh_query(self, lowered_text: str) -> bool:
+        """
+        Detect whether a short message is actually a fresh user request.
+
+        This guard prevents pending follow-up continuity from swallowing
+        short but explicit queries such as "Should I buy LSEG now?".
+        """
+        explicit_phrases = [
+            "should i",
+            "should we",
+            "what is happening",
+            "why is",
+            "what happened",
+            "compare ",
+            "analyze ",
+            "analyse ",
+            "latest ",
+            "current ",
+            "price ",
+            "news ",
+            "outlook ",
+            "trend ",
+            "rsi ",
+            "macd ",
+        ]
+        explicit_keywords = {
+            "buy",
+            "sell",
+            "price",
+            "news",
+            "compare",
+            "analysis",
+            "analyze",
+            "analyse",
+            "latest",
+            "today",
+            "now",
+            "quote",
+            "outlook",
+            "trend",
+            "why",
+            "rsi",
+            "macd",
+            "support",
+            "resistance",
+        }
+
+        if any(phrase in lowered_text for phrase in explicit_phrases):
+            logger.info(
+                "[Coordinator] Fresh-query guard matched explicit phrase | text=%s",
+                lowered_text[:120],
+            )
+            return True
+
+        tokens = set(re.findall(r"[a-z0-9]+", lowered_text))
+        if tokens & explicit_keywords:
+            logger.info(
+                "[Coordinator] Fresh-query guard matched keyword set | keywords=%s text=%s",
+                sorted(tokens & explicit_keywords),
+                lowered_text[:120],
+            )
+            return True
+
+        return False
+
+    def _normalize_history_route(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Keep history and memory lookups on a single top-level route.
+
+        The external router schema may still emit "context", but downstream
+        execution should consistently use the operational specialist.
+        """
+        intent = decision.get("intent")
+        sub_intent = decision.get("sub_intent")
+        is_history_query = bool(decision.get("is_history_query"))
+        if is_history_query or (intent == "context" and sub_intent == "history_lookup"):
+            logger.info(
+                "[Coordinator] Normalizing history route to operational | prior_intent=%s sub_intent=%s reason=%s",
+                intent,
+                decision.get("sub_intent"),
+                decision.get("reason"),
+            )
+            decision["intent"] = "operational"
+            decision["sub_intent"] = "history_lookup"
+            decision["is_history_query"] = True
+        return decision
+
+    def _is_direct_history_query(self, lowered_text: str) -> bool:
+        """
+        Detect direct conversation-memory requests without over-triggering on
+        casual words like "earlier" inside unrelated questions.
+        """
+        normalized_text = self._normalize_text(lowered_text)
+        history_patterns = [
+            r"^what did i ask\b",
+            r"^what was my last question\b",
+            r"^what did i say\b",
+            r"^what did we discuss\b",
+            r"^what were we discussing\b",
+            r"^summari[sz]e (our|the) (chat|conversation|history)\b",
+            r"^show (me )?(my|the) (history|previous questions|recent questions)\b",
+            r"^remind me what i asked\b",
+            r"^what happened earlier in (this|the) (chat|conversation)\b",
+        ]
+        matched_pattern = next((pattern for pattern in history_patterns if re.search(pattern, normalized_text)), None)
+        if matched_pattern:
+            logger.info(
+                "[Coordinator] Direct history-query heuristic matched | pattern=%s text=%s",
+                matched_pattern,
+                normalized_text[:160],
+            )
+            return True
+        return False
+
+    def _is_conversation_logic_query(self, lowered_text: str) -> bool:
+        """
+        Detect questions about routing, follow-up ownership, or conversational
+        interpretation rather than market content itself.
+        """
+        normalized_text = self._normalize_text(lowered_text)
+        logic_patterns = [
+            r"\bfresh question\b",
+            r"\bcontinuation trap\b",
+            r"\bwhich thread\b",
+            r"\bwhich agent\b",
+            r"\bhow would you classify\b",
+            r"\bhow did you classify\b",
+            r"\bhow would you interpret\b",
+            r"\bwhat would happen if\b",
+            r"\bignore your previous follow-up\b",
+            r"\bi am not asking for history\b",
+            r"\bshould that stop belong to\b",
+        ]
+        matched_pattern = next((pattern for pattern in logic_patterns if re.search(pattern, normalized_text)), None)
+        if matched_pattern:
+            logger.info(
+                "[Coordinator] Conversation-logic heuristic matched | pattern=%s text=%s",
+                matched_pattern,
+                normalized_text[:160],
+            )
+            return True
+        return False
+
+    def _heuristic_route_decision(
+        self,
+        text: str,
+        *,
+        last_specialist_agent: Optional[str],
+        has_pending_follow_up: bool,
+    ) -> Optional[Dict[str, Any]]:
+        lowered = text.strip().lower()
+        if not lowered:
+            return None
+
+        def _log_heuristic(decision: Dict[str, Any], trigger: str) -> Dict[str, Any]:
+            logger.info(
+                "[Coordinator] Heuristic route matched | trigger=%s intent=%s sub_intent=%s control=%s confidence=%.2f follow_up=%s reason=%s",
+                trigger,
+                decision.get("intent"),
+                decision.get("sub_intent"),
+                decision.get("control_signal"),
+                float(decision.get("confidence") or 0.0),
+                decision.get("is_follow_up"),
+                decision.get("reason"),
+            )
+            return decision
+
+        continue_set = {
+            "yes", "y", "haan", "ha", "han", "yep", "yeah", "ok", "okay", "sure",
+            "continue", "proceed", "do it", "go ahead"
+        }
+        stop_set = {"no", "n", "na", "nah", "nahi", "nope", "stop", "cancel"}
+        clarify_set = {"oh", "what", "what?", "huh", "confused", "simplify"}
+
+        compact = self._normalize_text(text)
+
+        if self._is_greeting_phrase(compact):
+            return _log_heuristic(self._default_routing_decision(
+                "greeting",
+                "Standalone greeting matched heuristic.",
+                is_standalone_greeting=True,
+                confidence=0.99,
+            ), "greeting")
+
+        if compact in continue_set | stop_set | clarify_set:
+            control_signal = (
+                "continue" if compact in continue_set
+                else "stop" if compact in stop_set
+                else "clarify"
+            )
+            target_intent = last_specialist_agent or "market"
+            return _log_heuristic(self._default_routing_decision(
+                target_intent,
+                "Brief conversational control signal matched heuristic.",
+                sub_intent="control",
+                control_signal=control_signal,
+                is_follow_up=bool(last_specialist_agent and has_pending_follow_up),
+                confidence=0.98,
+            ), "control_signal")
+
+        if lowered.startswith(("stage ", "rfq ", "buy ", "sell ")):
+            return _log_heuristic(self._default_routing_decision(
+                "order",
+                "Execution or staging verb matched heuristic.",
+                confidence=0.97,
+            ), "order_keyword")
+
+        if any(k in lowered for k in ["dv01", "pv01", "var 95", "stress test"]):
+            return _log_heuristic(self._default_routing_decision(
+                "risk",
+                "Risk metric keyword matched heuristic.",
+                confidence=0.97,
+            ), "risk_keyword")
+
+        if self._is_direct_history_query(lowered):
+            return _log_heuristic(self._normalize_history_route(self._default_routing_decision(
+                "context",
+                "History lookup keyword matched heuristic.",
+                sub_intent="history_lookup",
+                is_history_query=True,
+                confidence=0.96,
+            )), "history_keyword")
+
+        if self._is_conversation_logic_query(lowered):
+            return _log_heuristic(self._default_routing_decision(
+                "operational",
+                "Conversation-state reasoning matched heuristic.",
+                sub_intent="conversation_logic",
+                confidence=0.95,
+            ), "conversation_logic")
+
+        if any(
+            phrase in lowered
+            for phrase in ["what is happening", "what's happening", "today", "outlook", "trend", "why is", "why did", "current price", "latest price"]
+        ):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Live/recent market-analysis phrasing matched heuristic.",
+                sub_intent="market_analysis",
+                confidence=0.91,
+            ), "market_analysis_phrase")
+
+        if any(phrase in lowered for phrase in ["what is", "explain", "how does", "tell me about", "overview of"]):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Educational phrasing matched heuristic for market concept explanation.",
+                sub_intent="education",
+                confidence=0.9,
+            ), "education_phrase")
+
+        if any(k in lowered for k in ["rsi", "macd", "sma", "ema", "bollinger", "moving average", "support", "resistance"]):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Technical indicator keyword matched heuristic.",
+                sub_intent="technical_indicator",
+                confidence=0.94,
+            ), "technical_keyword")
+
+        if any(k in lowered for k in ["news", "headline", "catalyst", "announcement"]):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "News keyword matched heuristic.",
+                sub_intent="news",
+                confidence=0.92,
+            ), "news_keyword")
+
+        if any(k in lowered for k in ["outlook", "trend", "market", "stock", "price", "quote", "bullish", "bearish"]):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "General market-analysis keyword matched heuristic.",
+                sub_intent="market_analysis",
+                confidence=0.85,
+            ), "market_keyword")
+
+        return None
+
+    @staticmethod
     def _get_last_specialist_agent(conversation_id: Optional[str]) -> Optional[str]:
         """
         Recover the last non-greeting specialist from persisted history.
@@ -80,6 +423,24 @@ class CoordinatorAgent(BaseAgent):
         return bool(guidance.get("pending_follow_up"))
 
     @staticmethod
+    def _get_pending_follow_up_owner(conversation_id: Optional[str]) -> Optional[str]:
+        """
+        Recover which specialist owns the currently pending follow-up.
+        """
+        if not conversation_id:
+            return None
+
+        history = runtime_context_service.get_recent_history(conversation_id)
+        guidance = runtime_context_service.build_continuity_guidance(history)
+        owner = guidance.get("pending_follow_up_owner")
+        logger.info(
+            "[Coordinator] Pending follow-up owner resolved | owner=%s pending=%s",
+            owner,
+            guidance.get("pending_follow_up"),
+        )
+        return owner
+
+    @staticmethod
     def _should_escalate_route_check(text: str, parsed: Dict[str, Any]) -> bool:
         """
         Escalate ambiguous turns to the reasoning model for better continuity.
@@ -105,8 +466,13 @@ class CoordinatorAgent(BaseAgent):
         username: Optional[str],
         model_name: str,
     ) -> Dict[str, Any]:
+        logger.info(
+            "[Coordinator] Invoking LLM router | model=%s text_preview=%s",
+            model_name,
+            text[:120],
+        )
         prompt = Prompts.COORDINATOR_ROUTER.format(text=text)
-        return await self.generate_json_response(
+        parsed = await self.generate_json_response(
             prompt,
             conversation_id=conversation_id,
             username=username,
@@ -119,6 +485,19 @@ class CoordinatorAgent(BaseAgent):
             ),
             model_override=model_name,
         )
+        logger.info(
+            "[Coordinator] LLM router result | model=%s intent=%s sub_intent=%s control=%s confidence=%.2f follow_up=%s history=%s standalone_greeting=%s reason=%s",
+            model_name,
+            parsed.get("intent"),
+            parsed.get("sub_intent"),
+            parsed.get("control_signal"),
+            float(parsed.get("confidence") or 0.0),
+            parsed.get("is_follow_up"),
+            parsed.get("is_history_query"),
+            parsed.get("is_standalone_greeting"),
+            parsed.get("reason"),
+        )
+        return parsed
 
     async def handle_message(
         self, 
@@ -144,12 +523,23 @@ class CoordinatorAgent(BaseAgent):
 
         # 1. Routing phase
         context = context or {}
-        agent_id = await self._route_intent(
+        routing = await self._route_intent(
             text,
             conversation_id=conv_id,
             username=context.get("username"),
         )
-        
+        agent_id = routing.get("intent") or "greeting"
+        context["routing"] = routing
+        logger.info(
+            "[Coordinator] Final route | conversation_id=%s agent=%s sub_intent=%s control=%s confidence=%.2f reason=%s",
+            conv_id,
+            agent_id,
+            routing.get("sub_intent"),
+            routing.get("control_signal"),
+            float(routing.get("confidence") or 0.0),
+            routing.get("reason"),
+        )
+
         target_agent = registry.get_agent(agent_id or "greeting")
         if target_agent:
             response = await target_agent.handle_message(
@@ -178,7 +568,7 @@ class CoordinatorAgent(BaseAgent):
         *,
         conversation_id: Optional[str] = None,
         username: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> Dict[str, Any]:
         """
         Classification logic for routing requests.
         Priority:
@@ -189,26 +579,54 @@ class CoordinatorAgent(BaseAgent):
             The ID of the target agent or None.
         """
         lowered = text.strip().lower()
-
-        # --- Primary Path: Heuristic-first routing (0ms latency) ---
-        if lowered in {"hi", "hello", "hey", "good morning", "good evening", "good afternoon"}:
-            return "greeting"
-            
-        # Basic keyword matching for obvious intents to save LLM calls
-        if lowered.startswith("stage ") or lowered.startswith("rfq ") or lowered.startswith("buy ") or lowered.startswith("sell "):
-            return "order"
-        if any(k in lowered for k in ["dv01", "pv01", "var 95", "stress test"]):
-            return "risk"
-        if any(k in lowered for k in ["my history", "my previous", "audit log"]):
-            return "operational"
-
         last_specialist_agent = self._get_last_specialist_agent(conversation_id)
+        has_pending_follow_up = self._has_pending_follow_up(conversation_id)
+        pending_follow_up_owner = self._get_pending_follow_up_owner(conversation_id)
+        continuity_target = pending_follow_up_owner or last_specialist_agent
+
+        heuristic_decision = self._heuristic_route_decision(
+            text,
+            last_specialist_agent=continuity_target,
+            has_pending_follow_up=has_pending_follow_up,
+        )
+        if heuristic_decision:
+            return heuristic_decision
+
+        logger.info(
+            "[Coordinator] No heuristic match | last_specialist=%s pending_owner=%s pending_follow_up=%s text_preview=%s",
+            last_specialist_agent,
+            pending_follow_up_owner,
+            has_pending_follow_up,
+            text[:120],
+        )
+
         if (
-            last_specialist_agent
-            and self._has_pending_follow_up(conversation_id)
+            continuity_target
+            and has_pending_follow_up
             and len(lowered.split()) <= 6
+            and not self._is_explicit_fresh_query(lowered)
         ):
-            return last_specialist_agent
+            decision = self._default_routing_decision(
+                continuity_target,
+                "Short reply routed to previous specialist due to pending follow-up continuity.",
+                sub_intent="control",
+                control_signal="continue",
+                is_follow_up=True,
+                confidence=0.82,
+            )
+            logger.info(
+                "[Coordinator] Continuity route | agent=%s sub_intent=%s control=%s confidence=%.2f",
+                decision.get("intent"),
+                decision.get("sub_intent"),
+                decision.get("control_signal"),
+                float(decision.get("confidence") or 0.0),
+            )
+            return decision
+        if continuity_target and has_pending_follow_up and len(lowered.split()) <= 6:
+            logger.info(
+                "[Coordinator] Continuity guard prevented auto-continue | text_preview=%s",
+                text[:120],
+            )
 
         # --- Secondary Path: Fast LLM intent routing ---
         # Use the dedicated router model first, then escalate ambiguous continuity checks.
@@ -229,32 +647,59 @@ class CoordinatorAgent(BaseAgent):
                 )
 
             intent = parsed.get("intent") or "greeting"
+            parsed["sub_intent"] = parsed.get("sub_intent") or "general"
+            parsed["control_signal"] = parsed.get("control_signal") or "none"
             is_follow_up = bool(parsed.get("is_follow_up"))
             is_history_query = bool(parsed.get("is_history_query"))
             is_standalone_greeting = bool(parsed.get("is_standalone_greeting"))
 
-            if is_history_query or intent == "context":
-                return "operational"
+            parsed = self._normalize_history_route(parsed)
+            if parsed.get("intent") == "operational":
+                return parsed
 
-            if is_follow_up and last_specialist_agent:
-                return last_specialist_agent
+            if is_follow_up and continuity_target:
+                parsed["intent"] = continuity_target
+                logger.info(
+                    "[Coordinator] Follow-up routed to previous specialist | agent=%s sub_intent=%s control=%s",
+                    parsed.get("intent"),
+                    parsed.get("sub_intent"),
+                    parsed.get("control_signal"),
+                )
+                return parsed
 
-            if intent == "greeting" and not is_standalone_greeting and last_specialist_agent:
-                return last_specialist_agent
+            if intent == "greeting" and not is_standalone_greeting and continuity_target:
+                parsed["intent"] = continuity_target
+                logger.info(
+                    "[Coordinator] Non-standalone greeting rerouted to previous specialist | agent=%s",
+                    parsed.get("intent"),
+                )
+                return parsed
 
-            return intent
+            return parsed
         except Exception as e:
             logger.warning(f"[Coordinator] LLM routing failed: {e}")
             # --- Ultimate fallback ---
             if last_specialist_agent and len(lowered.split()) <= 4:
-                return last_specialist_agent
+                return self._default_routing_decision(
+                    last_specialist_agent,
+                    "Fallback continuity route to previous specialist.",
+                    sub_intent="control",
+                    control_signal="continue",
+                    is_follow_up=True,
+                    confidence=0.7,
+                )
             if any(k in lowered for k in ["risk", "compliance"]):
-                return "risk"
+                return self._default_routing_decision("risk", "Fallback keyword route to risk.", confidence=0.7)
             if any(k in lowered for k in ["price", "market", "stock", "news", "quote"]):
-                return "market"
+                return self._default_routing_decision(
+                    "market",
+                    "Fallback keyword route to market.",
+                    sub_intent="market_analysis",
+                    confidence=0.7,
+                )
             if any(k in lowered for k in ["order", "execution"]):
-                return "order"
-            return None
+                return self._default_routing_decision("order", "Fallback keyword route to order.", confidence=0.7)
+            return self._default_routing_decision("greeting", "Fallback default route.", confidence=0.5)
 
     def get_capabilities(self) -> List[str]:
         """

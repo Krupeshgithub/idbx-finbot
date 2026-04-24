@@ -64,6 +64,7 @@ class RuntimeContextService:
         last_specialist_agent = None
         last_follow_up_prompt = ""
         pending_follow_up = False
+        pending_follow_up_owner = None
 
         for item in history:
             role = item.get("role")
@@ -79,6 +80,10 @@ class RuntimeContextService:
                     last_specialist_agent = "operational" if agent_name == "context" else agent_name
 
         if last_assistant_message:
+            assistant_is_history_style = (
+                "[Context Detail]" in last_assistant_message
+                and "[Optional Follow-up]" not in last_assistant_message
+            )
             optional_follow_up_match = re.search(
                 r"\[Optional Follow-up\]\s*(.*)",
                 last_assistant_message,
@@ -86,13 +91,14 @@ class RuntimeContextService:
             )
             if optional_follow_up_match:
                 last_follow_up_prompt = _clean_text(optional_follow_up_match.group(1))
-            elif "?" in last_assistant_message:
+            elif "?" in last_assistant_message and not assistant_is_history_style:
                 question_parts = re.findall(r"([^?]*\?)", last_assistant_message, flags=re.DOTALL)
                 if question_parts:
                     last_follow_up_prompt = _clean_text(question_parts[-1])
 
         if last_follow_up_prompt:
             pending_follow_up = True
+            pending_follow_up_owner = last_specialist_agent
 
         return {
             "last_user_message": last_user_message,
@@ -100,6 +106,7 @@ class RuntimeContextService:
             "last_specialist_agent": last_specialist_agent,
             "last_follow_up_prompt": last_follow_up_prompt,
             "pending_follow_up": pending_follow_up,
+            "pending_follow_up_owner": pending_follow_up_owner,
         }
 
     def build_prompt_context(

@@ -15,6 +15,7 @@ HOW TO SWAP MODELS:
     - Or pass model_override="gemini-2.5-pro" for one-off calls
 """
 import asyncio
+import datetime
 import hashlib
 import json
 import logging
@@ -343,6 +344,18 @@ class LLMClient:
 
         return normalized[0] if len(normalized) == 1 else normalized
 
+    @staticmethod
+    def _tool_call_signature(name: str, arguments: Dict[str, Any]) -> str:
+        """
+        Build a stable signature for duplicate MCP tool-call detection.
+        """
+        return json.dumps(
+            {"name": name, "arguments": arguments},
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+
     async def call_mcp_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         """
         Public wrapper for explicit MCP tool execution from agents/services.
@@ -404,13 +417,31 @@ class LLMClient:
         lang_instruction = Prompts.MULTI_LANGUAGE_INSTRUCTION
         if settings.SUPPORTED_LANGUAGES and settings.SUPPORTED_LANGUAGES.lower() not in ["all", "any", "unrestricted"]:
             lang_instruction += f"\nNote: Try to prioritize supporting these specific languages if queried: {settings.SUPPORTED_LANGUAGES}"
-            
-        if system_instruction:
-            return f"{system_instruction}\n\n{lang_instruction}"
-        return lang_instruction
+
+        timestamp_instruction = self._build_timestamp_instruction()
+        instruction_parts = [part for part in [system_instruction, timestamp_instruction, lang_instruction] if part]
+        return "\n\n".join(instruction_parts)
+
+    @staticmethod
+    def _build_timestamp_instruction() -> str:
+        """
+        Inject the exact current server timestamp into the hidden system instruction.
+
+        This keeps time-awareness centralized and avoids duplicating timestamp
+        handling across agent prompts.
+        """
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        now_local = now_utc.astimezone()
+        return (
+            "Runtime Clock:\n"
+            f"- Current UTC time: {now_utc.isoformat()}\n"
+            f"- Current server local time: {now_local.isoformat()}\n"
+            "Treat this runtime clock as authoritative for any time-sensitive reasoning."
+        )
 
     def _build_json_config(self, schema: Optional[Any] = None, system_instruction: Optional[str] = None) -> types.GenerateContentConfig:
         system_instruction = self._apply_language_instruction(system_instruction)
+        logger.info("[LLMClient] Building JSON config with runtime clock injection.")
         return types.GenerateContentConfig(
             temperature=settings.VERTEX_AI_TEMPERATURE,
             max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
@@ -423,6 +454,7 @@ class LLMClient:
 
     def _build_text_config(self, system_instruction: Optional[str] = None) -> types.GenerateContentConfig:
         system_instruction = self._apply_language_instruction(system_instruction)
+        logger.info("[LLMClient] Building text config with runtime clock injection.")
         return types.GenerateContentConfig(
             temperature=settings.VERTEX_AI_TEMPERATURE,
             max_output_tokens=settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
@@ -702,6 +734,7 @@ class LLMClient:
                 contents = [user_prompt_content]
                 try:
                     tool_config.system_instruction = system_instruction
+                    seen_tool_signatures: set[str] = set()
 
                     response = await self._run_generate_content(
                         client=client,
@@ -721,9 +754,21 @@ class LLMClient:
                         contents.append(function_call_content)
 
                         tasks = []
+                        queued_calls = []
                         for function_call in response.function_calls:
                             tool_name = function_call.name
                             tool_args = dict(function_call.args or {})
+                            signature = self._tool_call_signature(tool_name, tool_args)
+                            if signature in seen_tool_signatures:
+                                logger.info(
+                                    "[LLMClient][%s] [%s/%s] Skipping duplicate tool call: %s",
+                                    trace_id or "no-trace",
+                                    turn,
+                                    max_turns,
+                                    tool_name,
+                                )
+                                continue
+                            seen_tool_signatures.add(signature)
                             logger.info(
                                 "[LLMClient][%s] [%s/%s] Executing tool (Parallel): %s",
                                 trace_id or "no-trace",
@@ -733,6 +778,7 @@ class LLMClient:
                             )
                             if tool_callback:
                                 await tool_callback(tool_name)
+                            queued_calls.append(function_call)
                             tasks.append(
                                 self._execute_mcp_tool(
                                     session,
@@ -741,6 +787,14 @@ class LLMClient:
                                     trace_id=trace_id,
                                 )
                             )
+
+                        if not tasks:
+                            logger.info(
+                                "[LLMClient][%s] No unique tool calls left in turn=%s; breaking MCP loop.",
+                                trace_id or "no-trace",
+                                turn,
+                            )
+                            break
 
                         results = await asyncio.gather(*tasks)
                         logger.info(
@@ -752,7 +806,7 @@ class LLMClient:
                         )
 
                         tool_parts = []
-                        for function_call, tool_result in zip(response.function_calls, results):
+                        for function_call, tool_result in zip(queued_calls, results):
                             tool_parts.append(
                                 types.Part.from_function_response(
                                     name=function_call.name,

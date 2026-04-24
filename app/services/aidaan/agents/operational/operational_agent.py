@@ -36,6 +36,8 @@ class OperationalAgent(BaseAgent):
                 system_instruction=(
                     Prompts.TRADER_SYSTEM_INSTRUCTION
                     + "\nRole: Operational data specialist. Use tools before answering table-backed questions."
+                    + " Use recent conversation memory to distinguish a true history query from a simple follow-up acceptance."
+                    + " If the user gives a brief continuation to a prior specialist follow-up, do not answer with a generic ambiguity explanation."
                 ),
             )
             return self.build_message_response(

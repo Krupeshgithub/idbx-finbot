@@ -67,6 +67,8 @@ class MarketAgent(BaseAgent):
                     + " Use MCP tools to validate the symbol and gather only the data required for the question."
                     + " For simple quote requests, keep the answer concise and accurate."
                     + " For historical requests, prefer historical series tools over spot quote tools."
+                    + " If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation."
+                    + " When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity of the user's short reply."
                 ),
             )
             return self.build_message_response(

@@ -36,7 +36,8 @@ ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 GOOGLE_CLOUD_LOCATION=global
 VERTEX_AI_MODEL_NAME=gemini-2.5-flash
-VERTEX_AI_REASONING_MODEL_NAME=gemini-2.5-pro
+VERTEX_AI_REASONING_MODEL_NAME=gemini-3.1-pro-preview
+VERTEX_AI_ROUTER_MODEL_NAME=gemini-3.1-flash-lite-preview
 VERTEX_AI_API_VERSION=v1
 VERTEX_AI_USE_EXPRESS_MODE=true
 VERTEX_AI_SERVICE_ACCOUNT_FILE=/absolute/path/to/service-account.json
@@ -53,7 +54,7 @@ Notes:
 - If you don't have service-account credentials, the app can try Vertex AI Express Mode with `GOOGLE_API_KEY`.
 - `VERTEX_AI_SERVICE_ACCOUNT_FILE` is optional and only needed when you do not want to rely on ADC.
 - `VERTEX_AI_SERVICE_ACCOUNT_JSON` is useful for Docker when you want to inject the full service-account JSON via env instead of mounting a file.
-- `gemini-2.5-flash` is the efficient default model, while `gemini-2.5-pro` is reserved for heavier reasoning flows.
+- `gemini-2.5-flash` remains a strong default model, `gemini-3.1-pro-preview` is configured for heavier reasoning flows, and `gemini-3.1-flash-lite-preview` is used for low-latency routing.
 - Vertex server tools such as Google Search / URL Context / Code Execution are supported as optional toggles and stay off by default for predictable latency.
 
 ### 4. Running the Server

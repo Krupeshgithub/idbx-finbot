@@ -50,7 +50,8 @@ class Settings(BaseSettings):
     
     # --- Vertex AI ---
     VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
-    VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
+    VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-3.1-pro-preview"
+    VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-3.1-flash-lite-preview"
     VERTEX_AI_API_VERSION: str = "v1"
     VERTEX_AI_TEMPERATURE: float = 0.2
     VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192

@@ -356,8 +356,28 @@ class LLMClient:
                 trace_id=trace_id,
             )
 
-    def _cache_key(self, prefix: str, model_name: str, payload: str) -> str:
-        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    def _cache_key(
+        self,
+        prefix: str,
+        model_name: str,
+        payload: str,
+        *,
+        schema: Optional[Any] = None,
+        system_instruction: Optional[str] = None,
+        use_mcp_tools: bool = False,
+    ) -> str:
+        cache_payload = json.dumps(
+            {
+                "payload": payload,
+                "schema": schema,
+                "system_instruction": system_instruction,
+                "use_mcp_tools": use_mcp_tools,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
         return f"llm:{prefix}:{model_name}:{digest}"
 
     def _log_usage(self, method: str, prompt: str, cached: bool = False) -> None:
@@ -513,7 +533,14 @@ class LLMClient:
         has_server_tools = bool(self._build_vertex_server_tools())
         use_hybrid_mode = use_mcp_tools or has_server_tools
 
-        cache_key = self._cache_key(cache_prefix, model_name, prompt)
+        cache_key = self._cache_key(
+            cache_prefix,
+            model_name,
+            prompt,
+            schema=response_schema,
+            system_instruction=system_instruction,
+            use_mcp_tools=use_mcp_tools,
+        )
         cached_result = cache.get(cache_key)
         if cached_result is not None:
             self._log_usage("generate_json", prompt, cached=True)

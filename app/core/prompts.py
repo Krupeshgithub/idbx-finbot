@@ -129,6 +129,45 @@ class Prompts:
         "required": ["intent", "confidence"]
     }
 
+    ROUTING_DECISION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "intent": {
+                "type": "string",
+                "enum": ["market", "risk", "order", "greeting", "context"],
+                "description": "Best-fit agent route for the current user turn."
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence score from 0 to 1."
+            },
+            "is_follow_up": {
+                "type": "boolean",
+                "description": "True when this message depends on the immediately preceding turn."
+            },
+            "is_history_query": {
+                "type": "boolean",
+                "description": "True when the user is asking about their own prior conversation, RFQ, or desk context."
+            },
+            "is_standalone_greeting": {
+                "type": "boolean",
+                "description": "True only for a fresh, standalone greeting that does not depend on prior context."
+            },
+            "reason": {
+                "type": "string",
+                "description": "One-line explanation grounded in the latest turn and recent conversation memory."
+            }
+        },
+        "required": [
+            "intent",
+            "confidence",
+            "is_follow_up",
+            "is_history_query",
+            "is_standalone_greeting",
+            "reason"
+        ]
+    }
+
     # =========================================================================
     # 1. COORDINATOR — Intent Classification
     # =========================================================================
@@ -329,19 +368,31 @@ class Prompts:
     # =========================================================================
 
     COORDINATOR_ROUTER = """
-    Classify this trading desk request into exactly one category:
-    1. "market" - Macro analysis, stocks, news sentiment, financial statements, technical indicators (RSI, SMA, MACD).
-    2. "risk" - PV01/DV01, desk limit checks, portfolio compliance.
-    3. "order" - RFQ staging, trade execution, parsing parameters.
-    4. "greeting" - Hellos and general status.
-    5. "context" - Conversation history, desk profile, RFQ history, counterparties, user context.
+    You are AIDAAN's routing specialist.
+    Use the current user turn plus any provided RECENT_HISTORY_JSON and OPERATIONAL_CONTEXT_JSON.
+
+    Route this trading desk request into exactly one category:
+    1. "market" - Macro analysis, stocks, news sentiment, financial statements, technical indicators, historical series.
+    2. "risk" - PV01/DV01, desk limit checks, portfolio compliance, exposure discussion.
+    3. "order" - RFQ staging, execution intent, trade parameter capture, draft/amend ticket workflows.
+    4. "greeting" - A fresh standalone hello or status ping that does not rely on earlier context.
+    5. "context" - Conversation history, what we discussed earlier, user/desk profile, RFQ history, counterparties, audit trail.
+
+    Important routing rules:
+    - If the new message is a continuation, acknowledgement, answer, correction, or clarification of the immediately prior assistant turn, mark is_follow_up=true.
+    - When is_follow_up=true, prefer the domain of the prior specialist turn instead of "greeting".
+    - Only choose "greeting" when the message is clearly standalone and not dependent on prior context.
+    - If the user is asking what they asked earlier, what was discussed, or any self/history lookup, choose "context".
+    - For brief ambiguous replies, use the recent conversation to infer continuation before falling back to greeting.
 
     Request: "{text}"
     Return ONLY raw JSON matching this schema:
     {{
       "intent": "market|risk|order|greeting|context",
       "confidence": 0.0,
-      "entities": {{}},
+      "is_follow_up": false,
+      "is_history_query": false,
+      "is_standalone_greeting": false,
       "reason": "one-line desk justification"
     }}
     """

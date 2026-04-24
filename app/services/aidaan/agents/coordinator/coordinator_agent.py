@@ -52,6 +52,74 @@ class CoordinatorAgent(BaseAgent):
         """
         super().__init__(name="coordinator", model_name=settings.VERTEX_AI_MODEL_NAME)
 
+    @staticmethod
+    def _get_last_specialist_agent(conversation_id: Optional[str]) -> Optional[str]:
+        """
+        Recover the last non-greeting specialist from persisted history.
+        """
+        if not conversation_id:
+            return None
+
+        history = runtime_context_service.get_recent_history(conversation_id)
+        for item in reversed(history):
+            agent_name = item.get("agent_name")
+            if agent_name in {"market", "risk", "order", "operational", "context"}:
+                return "operational" if agent_name == "context" else agent_name
+        return None
+
+    @staticmethod
+    def _has_pending_follow_up(conversation_id: Optional[str]) -> bool:
+        """
+        Detect whether the previous assistant turn left an unanswered follow-up prompt.
+        """
+        if not conversation_id:
+            return False
+
+        history = runtime_context_service.get_recent_history(conversation_id)
+        guidance = runtime_context_service.build_continuity_guidance(history)
+        return bool(guidance.get("pending_follow_up"))
+
+    @staticmethod
+    def _should_escalate_route_check(text: str, parsed: Dict[str, Any]) -> bool:
+        """
+        Escalate ambiguous turns to the reasoning model for better continuity.
+        """
+        word_count = len(text.strip().split())
+        confidence = float(parsed.get("confidence") or 0.0)
+        return (
+            word_count <= 4
+            or confidence < 0.75
+            or bool(parsed.get("is_follow_up"))
+            or bool(parsed.get("is_history_query"))
+            or (
+                parsed.get("intent") == "greeting"
+                and not bool(parsed.get("is_standalone_greeting"))
+            )
+        )
+
+    async def _classify_route(
+        self,
+        *,
+        text: str,
+        conversation_id: Optional[str],
+        username: Optional[str],
+        model_name: str,
+    ) -> Dict[str, Any]:
+        prompt = Prompts.COORDINATOR_ROUTER.format(text=text)
+        return await self.generate_json_response(
+            prompt,
+            conversation_id=conversation_id,
+            username=username,
+            response_schema=Prompts.ROUTING_DECISION_SCHEMA,
+            system_instruction=(
+                Prompts.TRADER_SYSTEM_INSTRUCTION
+                + "\nRole: Intent Classifier and continuity-aware router."
+                + " Use recent conversation memory to decide whether the message is a follow-up."
+                + " Never label a context-dependent acknowledgement or clarification as a greeting."
+            ),
+            model_override=model_name,
+        )
+
     async def handle_message(
         self, 
         text: str, 
@@ -134,25 +202,52 @@ class CoordinatorAgent(BaseAgent):
         if any(k in lowered for k in ["my history", "my previous", "audit log"]):
             return "operational"
 
+        last_specialist_agent = self._get_last_specialist_agent(conversation_id)
+        if (
+            last_specialist_agent
+            and self._has_pending_follow_up(conversation_id)
+            and len(lowered.split()) <= 6
+        ):
+            return last_specialist_agent
+
         # --- Secondary Path: Fast LLM intent routing ---
-        # Using gemini-1.5-flash-8b as it is extremely fast and perfect for simple classification
-        prompt = Prompts.COORDINATOR_ROUTER.format(text=text)
+        # Use the dedicated router model first, then escalate ambiguous continuity checks.
         try:
-            parsed = await self.generate_json_response(
-                prompt,
+            parsed = await self._classify_route(
+                text=text,
                 conversation_id=conversation_id,
                 username=username,
-                response_schema=Prompts.INTENT_SCHEMA,
-                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Intent Classifier",
-                model_override="gemini-1.5-flash-8b"
+                model_name=settings.VERTEX_AI_ROUTER_MODEL_NAME,
             )
-            intent = parsed.get("intent")
-            if intent == "context":
+
+            if self._should_escalate_route_check(text, parsed):
+                parsed = await self._classify_route(
+                    text=text,
+                    conversation_id=conversation_id,
+                    username=username,
+                    model_name=settings.VERTEX_AI_REASONING_MODEL_NAME,
+                )
+
+            intent = parsed.get("intent") or "greeting"
+            is_follow_up = bool(parsed.get("is_follow_up"))
+            is_history_query = bool(parsed.get("is_history_query"))
+            is_standalone_greeting = bool(parsed.get("is_standalone_greeting"))
+
+            if is_history_query or intent == "context":
                 return "operational"
+
+            if is_follow_up and last_specialist_agent:
+                return last_specialist_agent
+
+            if intent == "greeting" and not is_standalone_greeting and last_specialist_agent:
+                return last_specialist_agent
+
             return intent
         except Exception as e:
             logger.warning(f"[Coordinator] LLM routing failed: {e}")
             # --- Ultimate fallback ---
+            if last_specialist_agent and len(lowered.split()) <= 4:
+                return last_specialist_agent
             if any(k in lowered for k in ["risk", "compliance"]):
                 return "risk"
             if any(k in lowered for k in ["price", "market", "stock", "news", "quote"]):

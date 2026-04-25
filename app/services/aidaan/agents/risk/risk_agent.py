@@ -77,9 +77,14 @@ class RiskAgent(BaseAgent):
         schema = {
             "type": "object",
             "properties": {
-                "instrument": {"type": "string"},
-                "position_size": {"type": ["number", "null"]},
-                "confidence": {"type": "number"},
+                "instrument": {"type": "string", "description": "The stock ticker or asset name, e.g. 'AAPL'"},
+                "position_size_str": {
+                    "type": "string",
+                    "description": "The absolute numeric size of the trade in base units (e.g. '15750000'). "
+                                 "Identify global financial scales (Lakhs, Crores, Millions, Billions, Myriads, Trillions) "
+                                 "from ANY language and convert to a raw numeric string. Remove symbols like $ or ₹. "
+                                 "If multiple numbers exist, pick the one intended for the trade execution.",
+                },
             },
             "required": ["instrument"],
         }
@@ -88,12 +93,27 @@ class RiskAgent(BaseAgent):
             conversation_id=conversation_id,
             username=username,
             response_schema=schema,
-            system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Risk request parser",
+            system_instruction=(
+                Prompts.TRADER_SYSTEM_INSTRUCTION + 
+                "\nRole: Global Financial Extractor. Your task is to extract normalized numeric values from "
+                "multi-lingual trader input. Convert all magnitudes (Crores, Millions etc) to full base numbers."
+            ),
         )
+        
+        raw_size = parsed.get("position_size_str")
+        try:
+            # Strip non-numeric artifacts if LLM included any
+            if raw_size:
+                clean_size = "".join(c for c in str(raw_size) if c.isdigit() or c == ".")
+                position_size = float(clean_size) if clean_size else None
+            else:
+                position_size = None
+        except ValueError:
+            position_size = None
+
         return {
             "instrument": parsed.get("instrument") or "DEFAULT",
-            "position_size": parsed.get("position_size"),
-            "confidence": parsed.get("confidence"),
+            "position_size": position_size,
         }
 
     async def handle_message(
@@ -117,7 +137,7 @@ class RiskAgent(BaseAgent):
         logger.info(f"[RiskAgent] Analyzing risk query: {text}")
         context = context or {}
         
-        # 1. Primary path: Gemini extracts the request structure.
+        # 1. Primary path: Gemini extracts the instrument and the notional amount intelligently.
         try:
             request_parse = await self._parse_risk_request(
                 text=text,
@@ -126,8 +146,13 @@ class RiskAgent(BaseAgent):
             )
             instrument = str(request_parse.get("instrument") or "DEFAULT")
             position_size = request_parse.get("position_size")
+
+            # Fallback to python regex only if LLM failed to find a number
+            if position_size is None or position_size == 0:
+                position_size = parse_notional(text)
+                
         except Exception as parse_exc:
-            logger.warning("[RiskAgent] Gemini request parser failed; using fallback extraction: %s", parse_exc)
+            logger.warning("[RiskAgent] Gemini global parser failed; using fallback extraction: %s", parse_exc)
             instrument = infer_instrument(text, default="DEFAULT")
             position_size = parse_notional(text)
 

@@ -22,18 +22,35 @@ _INSTRUMENT_PATTERNS: tuple[tuple[str, str], ...] = (
 
 def parse_notional(text: str) -> Optional[float]:
     """
-    Parse a human-readable notional such as ``25m`` or ``1.5bn`` into base units.
+    Parse a human-readable notional such as ``25m`` or ``₹1.5 Crores`` into base units.
     """
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(bn|b|m|mm|million|billion)?\b", text.lower())
-    if not match:
+    if not text:
         return None
+    # Remove all commas for safety before parsing
+    clean_text = text.replace(",", "").lower()
+    
+    # Require a magnitude character/word so we don't accidentally parse "7:30 AM" or "12 portfolios"
+    matches = list(re.finditer(r"(\d+(?:\.\d+)?)\s*(k|lakh|lakhs|cr|crore|crores|bn|b|m|mm|million|billion)\b", clean_text))
+    
+    if not matches:
+        return None
+
+    # Generally take the last mentioned magnitude in the sentence if multiple exist (assumes the trailing intent)
+    match = matches[-1]
 
     value = float(match.group(1))
     unit = (match.group(2) or "").lower()
-    if unit in {"bn", "b", "billion"}:
-        return value * 1_000_000_000
+    
+    if unit in {"k"}:
+        return value * 1_000
+    if unit in {"lakh", "lakhs"}:
+        return value * 100_000
     if unit in {"m", "mm", "million"}:
         return value * 1_000_000
+    if unit in {"cr", "crore", "crores"}:
+        return value * 10_000_000
+    if unit in {"bn", "b", "billion"}:
+        return value * 1_000_000_000
     return value
 
 

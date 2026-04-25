@@ -671,11 +671,16 @@ async def get_market_news(
     
     # Extract titles for efficient batch processing
     titles = [item.get("title", "") for item in feed]
+    analytics_status = "SUCCESS"
     
     try:
         # Run through our professional ML model
         sentiment_results = sentiment_analyzer.analyze_batch(titles)
         
+        # Check if we fell back to neutral due to error
+        if not sentiment_analyzer.is_loaded:
+            analytics_status = "ERROR_FALLBACK"
+
         # Map intelligence results back to the news feed
         for item, sentiment in zip(feed, sentiment_results):
             # We inject the precise FinBERT scores required for the Visual State Machine
@@ -685,8 +690,13 @@ async def get_market_news(
     except Exception as e:
         import logging
         logging.getLogger("mcp_alphavantage_pro").error(f"FinBERT Analysis Failed: {e}")
+        analytics_status = "ERROR_UNAVAILABLE"
         
-    return raw_data
+    return {
+        "feed": feed,
+        "analytics_status": analytics_status,
+        "note": "FinBERT Intelligence is currently unavailable" if analytics_status != "SUCCESS" else None
+    }
 
 
 # Technical Indicators

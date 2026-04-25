@@ -326,7 +326,27 @@ class CoordinatorAgent(BaseAgent):
                 confidence=0.97,
             ), "order_keyword")
 
-        if any(k in lowered for k in ["dv01", "pv01", "var 95", "stress test"]):
+        technical_keywords = {"sma", "macd", "rsi", "ema", "bollinger", "stochastic", "indicator", "chart", "trend"}
+        risk_keywords = {"dv01", "pv01", "var 95", "stress test", "risk capital", "hard limit", "risk desk"}
+
+        # Priority 1: If both market and risk elements exist, route to market_agent (the orchestrator)
+        if any(k in lowered for k in technical_keywords) and any(k in lowered for k in risk_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Complex multi-agent query detected. Routing to Market Orchestrator for tool coordination.",
+                sub_intent="technical_indicator",
+                confidence=0.99,
+            ), "multi_agent_market_first")
+
+        if any(k in lowered for k in technical_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Technical indicator keyword matched heuristic.",
+                sub_intent="technical_indicator",
+                confidence=0.98,
+            ), "technical_keyword")
+
+        if any(k in lowered for k in risk_keywords):
             return _log_heuristic(self._default_routing_decision(
                 "risk",
                 "Risk metric keyword matched heuristic.",

@@ -84,6 +84,9 @@ class BaseAgent(ABC):
         Shared helper to call the LLM and normalize model-side error payloads.
         """
         if conversation_id:
+            from app.services.aidaan.runtime_context import current_conversation_id, current_username
+            current_conversation_id.set(conversation_id)
+            current_username.set(username)
             prompt = runtime_context_service.build_prompt_context(
                 base_prompt=prompt,
                 conversation_id=conversation_id,

@@ -6,10 +6,14 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, List, Optional
+import contextvars
+
+# Context variables for Secure A2A session propagation (Zero Leakage)
+current_conversation_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_conversation_id", default="")
+current_username: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_username", default=None)
 
 from app.core.config.settings import settings
 from app.db.operational.service import operational_data_service
-
 
 def _json_dump(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=True, default=str)

@@ -114,9 +114,11 @@ class MarketAgent(BaseAgent):
             Prompts.TRADER_SYSTEM_INSTRUCTION
             + "\nRole: Senior Interbank analyst."
             + " Resolve the correct ticker, market, index, company, or concept from the user's wording before using tools."
-            + " Use MCP tools only when the question genuinely requires fresh market data."
-            + " If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation."
-            + " When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity of the user's short reply."
+            + " \nCRITICAL RULES FOR DATA/A2A:\n"
+            + " 1. EXACT NUMBERS: If the user asks for exact stock prices/dates, MUST use Alpha Vantage exact data.\n"
+            + " 2. AGENT-TO-AGENT (A2A) COLLABORATION: Before providing trading advice, order staging, or confirming a position size, you MUST internally consult the 'risk' agent using your `consult_specialist_agent` tool. This ensures desk limits are securely verified within the Privacy Vault.\n"
+            + " 3. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
+            + " 4. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity."
         )
 
         if sub_intent == "education":
@@ -138,7 +140,8 @@ class MarketAgent(BaseAgent):
         if sub_intent == "news":
             return (
                 base
-                + " If entity-specific news cannot be retrieved, say that cleanly and stop there."
+                + " If news is retrieved but `analytics_status` is 'ERROR_FALLBACK', admit the sentiment model is down and do not guess a Bullish/Bearish trend."
+                + " If entity-specific news cannot be retrieved at all, say that cleanly and stop there."
                 + " Do not pad missing-news cases with speculative market narratives or recycled technical levels."
                 + " Only discuss implications when they are directly supported by retrieved news."
             )

@@ -655,7 +655,38 @@ async def get_market_news(
     }
     if tickers: params["tickers"] = tickers
     if topics: params["topics"] = topics
-    return await _fetch_av(params)
+    
+    # Fetch data
+    raw_data = await _fetch_av(params)
+    
+    if "error" in raw_data:
+        return raw_data
+        
+    feed = raw_data.get("feed", [])
+    if not feed:
+        return raw_data
+        
+    # Analyze sentiment using locally deployed FinBERT Model
+    from app.services.aidaan.core.sentiment import sentiment_analyzer
+    
+    # Extract titles for efficient batch processing
+    titles = [item.get("title", "") for item in feed]
+    
+    try:
+        # Run through our professional ML model
+        sentiment_results = sentiment_analyzer.analyze_batch(titles)
+        
+        # Map intelligence results back to the news feed
+        for item, sentiment in zip(feed, sentiment_results):
+            # We inject the precise FinBERT scores required for the Visual State Machine
+            item["finbert_sentiment_label"] = sentiment["label"]
+            item["finbert_polarity_score"] = sentiment["score"] # Critical for "Alert/Busy" logic
+            item["finbert_confidence"] = sentiment["confidence"]
+    except Exception as e:
+        import logging
+        logging.getLogger("mcp_alphavantage_pro").error(f"FinBERT Analysis Failed: {e}")
+        
+    return raw_data
 
 
 # Technical Indicators

@@ -70,8 +70,6 @@ class DLPClient:
                     "info_types": [
                         {"name": "EMAIL_ADDRESS"},
                         {"name": "PHONE_NUMBER"},
-                        {"name": "PERSON_NAME"},
-                        {"name": "LOCATION"},
                         {"name": "CREDIT_CARD_NUMBER"},
                         {"name": "US_SOCIAL_SECURITY_NUMBER"},
                         {"name": "IP_ADDRESS"},

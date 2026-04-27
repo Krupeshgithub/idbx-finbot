@@ -7,13 +7,12 @@ import time
 from typing import Any, Dict, Optional
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+
+from app.services.aidaan.mcp.shared import mcp
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp_alphavantage_pro")
-
-mcp = FastMCP("Alpha Vantage Professional Server")
 
 
 BASE_URL = "https://www.alphavantage.co/query"
@@ -577,7 +576,7 @@ async def get_crypto_daily_series(
     # Values are usually duplicated in both base and quote currency; we return quote-currency keys when present.
     return {
         "symbol": symbol.upper(),
-        "market": market.uper(),
+        "market": market.upper(),
         "last_refreshed": raw.get("Meta Data", {}).get("6. Last Refreshed") or raw.get("Meta Data", {}).get("5. Last Refreshed"),
         "data": [
             {
@@ -656,7 +655,48 @@ async def get_market_news(
     }
     if tickers: params["tickers"] = tickers
     if topics: params["topics"] = topics
-    return await _fetch_av(params)
+    
+    # Fetch data
+    raw_data = await _fetch_av(params)
+    
+    if "error" in raw_data:
+        return raw_data
+        
+    feed = raw_data.get("feed", [])
+    if not feed:
+        return raw_data
+        
+    # Analyze sentiment using locally deployed FinBERT Model
+    from app.services.aidaan.core.sentiment import sentiment_analyzer
+    
+    # Extract titles for efficient batch processing
+    titles = [item.get("title", "") for item in feed]
+    analytics_status = "SUCCESS"
+    
+    try:
+        # Run through our professional ML model
+        sentiment_results = sentiment_analyzer.analyze_batch(titles)
+        
+        # Check if we fell back to neutral due to error
+        if not sentiment_analyzer.is_loaded:
+            analytics_status = "ERROR_FALLBACK"
+
+        # Map intelligence results back to the news feed
+        for item, sentiment in zip(feed, sentiment_results):
+            # We inject the precise FinBERT scores required for the Visual State Machine
+            item["finbert_sentiment_label"] = sentiment["label"]
+            item["finbert_polarity_score"] = sentiment["score"] # Critical for "Alert/Busy" logic
+            item["finbert_confidence"] = sentiment["confidence"]
+    except Exception as e:
+        import logging
+        logging.getLogger("mcp_alphavantage_pro").error(f"FinBERT Analysis Failed: {e}")
+        analytics_status = "ERROR_UNAVAILABLE"
+        
+    return {
+        "feed": feed,
+        "analytics_status": analytics_status,
+        "note": "FinBERT Intelligence is currently unavailable" if analytics_status != "SUCCESS" else None
+    }
 
 
 # Technical Indicators

@@ -33,7 +33,17 @@ class ContextAgent(BaseAgent):
             username=username,
         )
         try:
-            parsed = await self.generate_json_response(prompt)
+            parsed = await self.generate_json_response(
+                prompt,
+                conversation_id=conversation_id,
+                username=username,
+                system_instruction=(
+                    Prompts.TRADER_SYSTEM_INSTRUCTION
+                    + "\nRole: Operational and history specialist."
+                    + " Use continuity guidance to resolve brief follow-up turns against the latest persisted assistant question."
+                    + " Only answer with pure history/context output when the user is actually asking about prior conversation or operational records."
+                ),
+            )
             return self.build_message_response(
                 reply=parsed.get("reply", "Operational context retrieved."),
                 bullets=parsed.get("bullets", []),
@@ -61,4 +71,3 @@ class ContextAgent(BaseAgent):
 
 
 context_agent = ContextAgent()
-

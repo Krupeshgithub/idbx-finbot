@@ -5,7 +5,6 @@ Enables real-time visual state machine pulses and unified conversational flow.
 import asyncio
 import json
 import logging
-import time
 
 from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
 from app.services.persistence import persistence_service
@@ -31,15 +30,37 @@ async def aidaan_websocket(websocket: WebSocket):
 
     greeted = False
     dormant_sent = False
+    connection_open = True
+
+    async def safe_send_json(payload) -> bool:
+        nonlocal connection_open
+        if not connection_open:
+            return False
+        try:
+            await websocket.send_json(payload)
+            return True
+        except WebSocketDisconnect:
+            connection_open = False
+            return False
+        except RuntimeError as exc:
+            if 'close message has been sent' in str(exc):
+                connection_open = False
+                return False
+            raise
+
     try:
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
             except asyncio.TimeoutError:
                 if not dormant_sent:
-                    await websocket.send_json({"type": "state", "state": "Dormant"})
+                    if not await safe_send_json({"type": "state", "state": "Dormant"}):
+                        break
                     dormant_sent = True
                 continue
+            except WebSocketDisconnect:
+                connection_open = False
+                break
 
             message = json.loads(data)
 
@@ -63,10 +84,12 @@ async def aidaan_websocket(websocket: WebSocket):
                 except Exception:
                     distance_val = None
                 if distance_val is not None and distance_val <= 64.0:
-                    await websocket.send_json({"type": "state", "state": "Awakening", "detail": "Trader proximity detected."})
+                    if not await safe_send_json({"type": "state", "state": "Awakening", "detail": "Trader proximity detected."}):
+                        break
                     dormant_sent = False
                 else:
-                    await websocket.send_json({"type": "state", "state": "Dormant"})
+                    if not await safe_send_json({"type": "state", "state": "Dormant"}):
+                        break
                     dormant_sent = True
                 continue
 
@@ -81,17 +104,19 @@ async def aidaan_websocket(websocket: WebSocket):
             if user_text:
                 # Transition to 'Thinking' state only if we have a real payload
                 try:
-                    await websocket.send_json({
+                    if not await safe_send_json({
                         "type": "state", 
                         "state": "Listening", 
                         "detail": "Trader input received."
-                    })
+                    }):
+                        break
 
-                    await websocket.send_json({
+                    if not await safe_send_json({
                         "type": "state",
                         "state": "Thinking",
                         "detail": "Coordinator processing..."
-                    })
+                    }):
+                        break
                     await asyncio.sleep(0.1)
                 except Exception as e:
                     logger.error(f"State signal error: {e}")
@@ -100,7 +125,7 @@ async def aidaan_websocket(websocket: WebSocket):
                 try:
                     async def tool_pulse(tool_name: str):
                         try:
-                            await websocket.send_json({
+                            await safe_send_json({
                                 "type": "state",
                                 "state": "Thinking",
                                 "detail": f"Executing {tool_name}..."
@@ -126,31 +151,35 @@ async def aidaan_websocket(websocket: WebSocket):
                     # Optional alert signal for risk breaches / urgent desk events
                     lowered = (response.reply or "").lower()
                     if response.model.agent == "risk" and any(k in lowered for k in ["breach", "limit", "urgent", "kill switch"]):
-                        await websocket.send_json({"type": "state", "state": "Alert/Busy", "detail": "Risk alert condition detected."})
+                        if not await safe_send_json({"type": "state", "state": "Alert/Busy", "detail": "Risk alert condition detected."}):
+                            break
 
                     # Stream Final Result
-                    await websocket.send_json({
+                    if not await safe_send_json({
                         "type": "chat_reply",
                         "payload": response.model_dump()
-                    })
+                    }):
+                        break
                     dormant_sent = False
                 except Exception as inner_e:
                     logger.error(f"Agent Processing Error: {inner_e}")
-                    await websocket.send_json({
+                    if not await safe_send_json({
                         "type": "chat_reply",
                         "payload": {
                             "reply": "I encountered a processing error. Our desk is looking into it.",
                             "bullets": [f"Error: {str(inner_e)}"],
                             "actions": []
                         }
-                    })
+                    }):
+                        break
 
             # Do not force Dormant immediately; idle timeout will handle it.
 
     except WebSocketDisconnect:
-        pass
+        connection_open = False
     except Exception as e:
-        await websocket.send_json({
+        if connection_open:
+            await safe_send_json({
             "type": "error",
             "message": f"WebSocket error: {str(e)}"
-        })
+            })

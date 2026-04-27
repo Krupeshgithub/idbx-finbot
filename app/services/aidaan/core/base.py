@@ -3,6 +3,8 @@ Base Agent and Registry for AIDAAN
 ===================================
 Common interface for all specialized agents.
 """
+from __future__ import annotations
+
 import logging
 from typing import Any, Dict, List, Optional
 from abc import ABC, abstractmethod
@@ -82,6 +84,9 @@ class BaseAgent(ABC):
         Shared helper to call the LLM and normalize model-side error payloads.
         """
         if conversation_id:
+            from app.services.aidaan.runtime_context import current_conversation_id, current_username
+            current_conversation_id.set(conversation_id)
+            current_username.set(username)
             prompt = runtime_context_service.build_prompt_context(
                 base_prompt=prompt,
                 conversation_id=conversation_id,

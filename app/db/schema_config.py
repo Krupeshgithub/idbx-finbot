@@ -6,12 +6,28 @@ from __future__ import annotations
 from app.core.config.settings import settings
 
 
-PUBLIC_USER_TABLE = "users"
-READ_ONLY_TABLES = {
+PUBLIC_TABLES = {
     "users",
     "desks",
     "desk_memberships",
     "desk_limits",
+    "counterparties",
+}
+READ_ONLY_TABLES = set(PUBLIC_TABLES)
+
+AIDAAN_TABLES = {
+    "conversations",
+    "messages",
+    "rfq_drafts",
+    "tool_invocations",
+    "audit_events",
+}
+
+MIRRORABLE_AIDAAN_TABLES = {
+    "desks",
+    "desk_memberships",
+    "desk_limits",
+    "counterparties",
 }
 
 
@@ -23,8 +39,10 @@ def schemas_enabled() -> bool:
 def schema_for_table(table_name: str) -> str | None:
     if not schemas_enabled():
         return None
-    if table_name == PUBLIC_USER_TABLE:
+    if table_name in PUBLIC_TABLES:
         return settings.DB_PUBLIC_SCHEMA
+    if table_name in AIDAAN_TABLES:
+        return settings.DB_AIDAAN_SCHEMA
     return settings.DB_AIDAAN_SCHEMA
 
 

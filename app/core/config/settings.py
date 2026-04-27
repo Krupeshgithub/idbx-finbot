@@ -50,10 +50,13 @@ class Settings(BaseSettings):
     
     # --- Vertex AI ---
     VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
-    VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
+    VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-3.1-pro-preview"
+    VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-3.1-flash-lite-preview"
     VERTEX_AI_API_VERSION: str = "v1"
     VERTEX_AI_TEMPERATURE: float = 0.2
     VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192
+    VERTEX_AI_MAX_WORKERS: int = 12
+    VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 8
     VERTEX_AI_USE_EXPRESS_MODE: bool = True
     VERTEX_AI_SERVICE_ACCOUNT_FILE: Optional[str] = None
     VERTEX_AI_SERVICE_ACCOUNT_JSON: Optional[str] = None
@@ -106,7 +109,7 @@ class Settings(BaseSettings):
 
     # --- MCP (Model Context Protocol) ---
     MCP_SERVER_COMMAND: str = sys.executable
-    MCP_SERVER_ARGS: str = "app/services/aidaan/mcp/market.py"
+    MCP_SERVER_ARGS: str = "app/services/aidaan/mcp/server.py"
     MCP_TRANSPORT: str = "inprocess"  # "inprocess" (default) | "stdio"
 
     # --- BigQuery Data Warehouse ---

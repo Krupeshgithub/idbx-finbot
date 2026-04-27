@@ -1,160 +1,262 @@
 """
-Institutional Market Analyst Agent - AIDAAN Intelligence Layer
-==============================================================
-The MarketAgent specializes in synthesizing deep financial insights using 
-exhaustive real-time data sources (Alpha Vantage).
-
-Key Features:
-- Multi-tool orchestration (Economics, FX, Commodities, Technicals).
-- Agentic multi-turn synthesis for complex queries.
-- Bloomberg-style professional report generation.
+Institutional market agent for Vertex-first market orchestration.
 """
+from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
-from app.services.aidaan.core.base import BaseAgent
-from app.schemas.aidaan import AidaanMessageResponse
-from app.core.prompts import Prompts
 from app.core.config.settings import settings
+from app.core.prompts import Prompts
+from app.schemas.aidaan import AidaanMessageResponse
+from app.services.aidaan.core.base import BaseAgent
 
 logger = logging.getLogger(__name__)
 
 
 class MarketAgent(BaseAgent):
     """
-    Agentic analyst capable of navigating complex market data ecosystems 
-    to provide synthesized financial reports.
+    Vertex-first market agent.
+
+    This agent intentionally avoids manual ticker aliases and heuristic
+    fast-paths so symbol resolution, tool choice, and response synthesis
+    remain model-driven.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
-        Initialize with a model capable of complex tool orchestration.
+        Initialize the market agent with the default market model.
         """
-        super().__init__(
-            name="market",
-            model_name=settings.VERTEX_AI_MODEL_NAME, # Switch back to High-Speed Flash
+        super().__init__(name="market", model_name=settings.VERTEX_AI_MODEL_NAME)
+
+    @staticmethod
+    def _normalize_market_text(text: str) -> str:
+        """
+        Normalize user text for lightweight execution guards.
+        """
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    def _resolve_execution_plan(self, *, sub_intent: str, control_signal: str, text: str) -> Dict[str, Any]:
+        """
+        Decide whether the current market request should use no tools, a lightweight
+        model-only path, or the full tool-backed reasoning flow.
+        """
+        normalized_text = self._normalize_market_text(text)
+        freshness_requested = bool(
+            re.search(r"\b(today|now|latest|current|live|realtime|real-time)\b", normalized_text)
+        )
+        freshness_negated = bool(
+            re.search(
+                r"\b(do not|don't|without|no need for|not asking for)\b.{0,40}\b(live|current|real[- ]?time)\b",
+                normalized_text,
+            )
+            or re.search(
+                r"\b(live|current|real[- ]?time)\b.{0,40}\b(data)\b.{0,20}\b(do not|don't|without|not needed|not required)\b",
+                normalized_text,
+            )
+        )
+        requires_freshness = freshness_requested and not freshness_negated
+
+        plan = {
+            "tool_mode": "full",
+            "model_name": settings.VERTEX_AI_REASONING_MODEL_NAME,
+            "fast_path_kind": None,
+        }
+
+        if control_signal == "stop":
+            plan.update({
+                "tool_mode": "none",
+                "model_name": settings.VERTEX_AI_MODEL_NAME,
+                "fast_path_kind": "stop_acknowledgement",
+            })
+        elif control_signal == "clarify":
+            plan.update({
+                "tool_mode": "none",
+                "model_name": settings.VERTEX_AI_MODEL_NAME,
+                "fast_path_kind": "clarify_response",
+            })
+        elif sub_intent == "education" and not requires_freshness:
+            plan.update({
+                "tool_mode": "none",
+                "model_name": settings.VERTEX_AI_MODEL_NAME,
+                "fast_path_kind": "education_no_tools",
+            })
+
+        logger.info(
+            "[MarketAgent] Execution plan resolved | sub_intent=%s control=%s tool_mode=%s model=%s fast_path=%s freshness_requested=%s freshness_negated=%s requires_freshness=%s",
+            sub_intent,
+            control_signal,
+            plan["tool_mode"],
+            plan["model_name"],
+            plan["fast_path_kind"],
+            freshness_requested,
+            freshness_negated,
+            requires_freshness,
+        )
+        return plan
+
+    def _build_stop_response(self, *, conversation_id: str, model_name: str) -> AidaanMessageResponse:
+        """
+        Return an immediate acknowledgement for explicit stop signals.
+        """
+        logger.info("[MarketAgent] Fast path engaged | kind=stop_acknowledgement")
+        return self.build_message_response(
+            reply="[Direct Answer]\nAcknowledged. I will stop the current market analysis.",
+            bullets=["Current analysis halted", "No additional tools were used"],
+            conversation_id=conversation_id,
+            model_info=self.get_model_info(model_override=model_name),
         )
 
+    @staticmethod
+    def _build_market_system_instruction(sub_intent: str, control_signal: str) -> str:
+        base = (
+            Prompts.TRADER_SYSTEM_INSTRUCTION
+            + "\nRole: Senior Interbank analyst."
+            + " Resolve the correct ticker, market, index, company, or concept from the user's wording before using tools."
+            + " \nCRITICAL RULES FOR DATA/A2A:\n"
+            + " 1. EXACT NUMBERS: If the user asks for exact stock prices/dates, MUST use Alpha Vantage exact data.\n"
+            + " 2. AGENT-TO-AGENT (A2A) COLLABORATION: Before providing trading advice, order staging, or confirming a position size, you MUST internally consult the 'risk' agent using your `consult_specialist_agent` tool. This ensures desk limits are securely verified within the Privacy Vault.\n"
+            + " 3. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
+            + " 4. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity."
+        )
+
+        if sub_intent == "education":
+            return (
+                base
+                + " The user is asking for explanation or overview, not a live trade read."
+                + " Do not jump straight into one-company ticker analysis unless the user explicitly asked for a stock."
+                + " Prefer clear explanatory sections such as [Direct Answer], [How It Works], [Why It Matters], [Optional Follow-up]."
+                + " Avoid forced trade implication language for pure educational questions."
+            )
+
+        if sub_intent == "technical_indicator":
+            return (
+                base
+                + " Focus on the requested indicators and keep the response compact."
+                + " Include only the most relevant price levels and avoid unrelated fundamental exposition."
+            )
+
+        if sub_intent == "news":
+            return (
+                base
+                + " If news is retrieved but `analytics_status` is 'ERROR_FALLBACK', admit the sentiment model is down and do not guess a Bullish/Bearish trend."
+                + " If entity-specific news cannot be retrieved at all, say that cleanly and stop there."
+                + " Do not pad missing-news cases with speculative market narratives or recycled technical levels."
+                + " Only discuss implications when they are directly supported by retrieved news."
+            )
+
+        if control_signal == "stop":
+            return (
+                base
+                + " The user appears to be declining further analysis."
+                + " Reply briefly, acknowledge the stop, and offer a lightweight alternative only if helpful."
+            )
+
+        if control_signal == "clarify":
+            return (
+                base
+                + " The user appears confused or wants simplification."
+                + " Simplify the prior answer or ask one short clarifying question."
+            )
+
+        return base
+
     async def handle_message(
-        self, 
-        text: str, 
-        conversation_id: str, 
+        self,
+        text: str,
+        conversation_id: str,
         context: Optional[Dict[str, Any]] = None,
         tool_callback: Optional[callable] = None,
     ) -> AidaanMessageResponse:
         """
-        Processes market queries by discovering and invoking appropriate tools.
+        Run a full Vertex-driven market workflow for the user query.
 
-        Args:
-            text: Market-related query (e.g., "Analyze Nvidia's RSI vs its peers").
-            conversation_id: Session ID for state tracking.
-            context: Additional market context.
-
-        Returns:
-            AidaanMessageResponse: A synthesized, professional financial report.
+        The model is responsible for:
+        - identifying the correct instrument or company
+        - choosing the relevant MCP tools
+        - synthesizing the final trader-facing answer
         """
-        logger.info(f"[MarketAgent] Analyzing market query: {text}")
+        logger.info("[MarketAgent] Analyzing market query via Vertex-first orchestration: %s", text)
         context = context or {}
-        
-        # Externalized professional orchestration prompt
-        orchestration_prompt = Prompts.MARKET_ORCHESTRATION.format(text=text)
+        routing = context.get("routing") or {}
+        sub_intent = routing.get("sub_intent", "general")
+        control_signal = routing.get("control_signal", "none")
+        logger.info(
+            "[MarketAgent] Routing context received | sub_intent=%s control=%s confidence=%s reason=%s",
+            sub_intent,
+            control_signal,
+            routing.get("confidence"),
+            routing.get("reason"),
+        )
+        execution_plan = self._resolve_execution_plan(
+            sub_intent=sub_intent,
+            control_signal=control_signal,
+            text=text,
+        )
+        tool_mode = execution_plan["tool_mode"]
+        model_name = execution_plan["model_name"]
+        fast_path_kind = execution_plan["fast_path_kind"]
 
-        # --- Heuristic Fast-Path for simple quotes ---
-        if len(text.split()) < 4 and any(k in text.lower() for k in ["price", "quote", "price of", "level"]):
-             logger.info("[MarketAgent] Triggering Heuristic FAST-PATH for simple quote.")
-             if tool_callback: await tool_callback("get_stock_quote")
-             
-             # Fetch data directly bypassing LLM turn 1
-             import re
-             ticker_match = re.search(r'\b[A-Za-z]{1,5}\b', text.upper())
-             symbol = ticker_match.group(0) if ticker_match else text.split()[0].upper()
-             
-             data = await self.llm.call_mcp_tool("get_stock_quote", {"symbol": symbol})
-             
-             # Even if error, if it's a rate limit, the tool now returns simulated data
-             # Check for simulation note or valid data
-             price = data.get("price")
-             if price:
-                 try:
-                     change_val = float(str(data.get("change_percent", "0")).strip('%'))
-                 except:
-                     change_val = 0.0
-                     
-                 change_str = data.get("change_percent", "0%")
-                 reply = (
-                     f"### [Direct Answer]\n\n"
-                     f"| Metric | Value |\n"
-                     f"| :--- | :--- |\n"
-                     f"| **Current Price** | {price} |\n"
-                     f"| **Change (%)** | {change_str} |\n"
-                     f"| **Volume** | {data.get('volume', 'N/A')} |\n"
-                     f"| **Previous Close** | {data.get('previous_close', 'N/A')} |\n\n"
-                     f"### [Market Insight]\n"
-                     f"Institutional flows for **{symbol}** are currently { 'skewed to the upside' if change_val > 0 else 'under pressure' }. "
-                     f"Volume of {data.get('volume', 'N/A')} indicates {'active' if data.get('volume') and str(data.get('volume')).replace(',','').isdigit() and int(str(data.get('volume')).replace(',','')) > 1000000 else 'moderate'} participation from large-scale desk accounts.\n\n"
-                     f"### [Trade Implication]\n"
-                     f"Positioning suggests a **{'bullish' if change_val > 0 else 'cautious'}** bias. "
-                     f"Traders should monitor for support at {data.get('low', 'N/A')} and resistance at {data.get('high', 'N/A')}.\n\n"
-                     f"### [Optional Follow-up]\n"
-                     f"Would you like to analyze **{symbol}'s** 10-day price trend or implied volatility levels?"
-                 )
-                 if "note" in data:
-                     reply += f"\n\n> [!NOTE]\n> {data['note']}"
-                       
-                 return self.build_message_response(
-                     reply=reply, 
-                     bullets=[f"Ticker: {symbol}", f"Price: {price}"], 
-                     conversation_id=conversation_id, 
-                     model_info={"agent": self.name, "llm": "PREMIUM-FASTPATH"}
-                 )
+        if fast_path_kind == "stop_acknowledgement":
+            return self._build_stop_response(conversation_id=conversation_id, model_name=model_name)
+
+        orchestration_prompt = Prompts.MARKET_ORCHESTRATION.format(text=text)
+        logger.info(
+            "[MarketAgent] Dispatching market generation | model=%s tool_mode=%s fast_path=%s",
+            model_name,
+            tool_mode,
+            fast_path_kind,
+        )
 
         try:
-            # Determine if this is a deep-dive query (requires higher accuracy/reasoning)
-            deep_dive_keywords = ["analyze", "identify", "compare", "justify", "evaluate", "trend", "phase", "overbought", "oversold"]
-            is_deep_dive = any(k in text.lower() for k in deep_dive_keywords)
-            model_name = settings.VERTEX_AI_REASONING_MODEL_NAME if is_deep_dive else self._model_name
-            
-            logger.info(f"[MarketAgent] Routing to model: {model_name} (Deep-Dive: {is_deep_dive})")
-
-            # Execute agentic loop with tool discovery enabled
             response_data = await self.generate_json_response(
                 orchestration_prompt,
                 conversation_id=conversation_id,
                 model_override=model_name,
                 username=context.get("username"),
-                use_mcp_tools=True,
+                use_mcp_tools=(tool_mode == "full"),
                 tool_callback=tool_callback,
                 response_schema=Prompts.STANDARD_RESPONSE_SCHEMA,
-                system_instruction=Prompts.TRADER_SYSTEM_INSTRUCTION + "\nRole: Senior Interbank analyst. You MUST gather all relevant financial metrics (OHLCV, Fundamentals, Technicals, News) before providing a final synthesis. Use clean tables."
+                system_instruction=self._build_market_system_instruction(sub_intent, control_signal),
             )
-            
+            logger.info(
+                "[MarketAgent] Response generated | format=%s bullets=%s reply_preview=%s",
+                response_data.get("format"),
+                len(response_data.get("bullets", [])),
+                str(response_data.get("reply", ""))[:160],
+            )
             return self.build_message_response(
                 reply=response_data.get("reply", "Market data analysis complete."),
                 bullets=response_data.get("bullets", []),
                 conversation_id=conversation_id,
                 model_info=self.get_model_info(model_override=model_name),
             )
-        except Exception as e:
+        except Exception as exc:
+            logger.warning(
+                "[MarketAgent] Market orchestration failed | sub_intent=%s control=%s error=%s",
+                sub_intent,
+                control_signal,
+                exc,
+            )
             return self.build_error_response(
-                reply="I encountered an issue while performing the market deep-dive. Please verify the symbol or metric.",
+                reply="I encountered an issue while performing the market analysis. Please verify the instrument or request.",
                 conversation_id=conversation_id,
-                error=e,
-                model_info=self.get_model_info(),
+                error=exc,
+                model_info=self.get_model_info(model_override=model_name),
             )
 
     def get_capabilities(self) -> List[str]:
         """
-        Returns the scope of market analysis capabilities.
+        Return the market coverage supported by the agent.
         """
         return [
-            "macro_economics_analysis", 
-            "commodity_tracking", 
-            "fx_monitoring", 
-            "technical_analysis", 
-            "fundamental_deep_dives"
+            "market_quotes",
+            "historical_price_series",
+            "technical_analysis",
+            "fundamental_analysis",
+            "multi_tool_market_orchestration",
         ]
 
 
-# Singleton instance
 market_agent = MarketAgent()

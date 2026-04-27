@@ -5,6 +5,7 @@ Handles the formal execution of actions drafted by agents.
 from fastapi import APIRouter
 
 from app.db.repositories import ANONYMOUS_IDENTITIES
+from app.core.llm_client import llm_client
 from app.schemas.aidaan import (
     ToolInvokeRequest,
     ToolInvokeResponse
@@ -34,21 +35,17 @@ async def invoke_tool(payload: ToolInvokeRequest):
     )
 
     if payload.tool_name == "draft_rfq_ticket":
-        response = ToolInvokeResponse(
-            ok=True,
-            result={
-                "status": "ticket_prepared",
-                "instrument": payload.arguments.get("instrument"),
-                "notional": payload.arguments.get("notional"),
-                "requires_human_confirm": True
-            }
+        mcp_result = await llm_client.call_mcp_tool(
+            "draft_rfq_ticket",
+            {
+                **payload.arguments,
+                "user_identity": resolved_username,
+            },
         )
-        persistence_service.persist_tool_invocation(
-            username=resolved_username,
-            conversation_id=payload.arguments.get("conversation_id"),
-            tool_name=payload.tool_name,
-            arguments=payload.arguments,
-            result=response.result or {},
+        response = ToolInvokeResponse(
+            ok="error" not in (mcp_result or {}),
+            result=mcp_result,
+            error=(mcp_result or {}).get("error") if isinstance(mcp_result, dict) else None,
         )
         return response
     

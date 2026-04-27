@@ -43,6 +43,10 @@ class Prompts:
         "- Structure responses in 4 distinct parts: [Direct Answer], [Market Insight], [Trade Implication], [Optional Follow-up]. "
         "- Use bold highlights for key levels and metrics. "
 
+        "Institutional Guardrails (STRICT): "
+        "- HONESTY: If a tool output indicates an error, fallback, or unavailability (e.g., 'analytics_status': 'ERROR_FALLBACK'), you MUST admit this to the user. Do NOT speculate or hallucinate trends (Bullish/Bearish) to fill the data gap. "
+        "- LANGUAGE MIRRORING: AIDAAN is natively multi-lingual. You MUST mirror the user's specific linguistic blend (Hinglish, French-Hindi, Spanish-mix, Japanese-Greetings). If the user asks in Hinglish, reply in the same Hinglish flow. Maintain the professional persona throughout. "
+
         "Constraints: "
         "- Never provide financial advice. "
         "- Never execute trades; only stage or prepare. "
@@ -86,6 +90,22 @@ class Prompts:
         "required": ["format", "reply"]
     }
 
+    OPERATIONAL_RESPONSE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "reply": {
+                "type": "string",
+                "description": "Direct institutional answer grounded in tool output and operational records."
+            },
+            "bullets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Specific facts, ids, limits, timestamps, or workflow notes."
+            }
+        },
+        "required": ["reply"]
+    }
+
     INTENT_SCHEMA = {
         "type": "object",
         "properties": {
@@ -111,6 +131,67 @@ class Prompts:
             }
         },
         "required": ["intent", "confidence"]
+    }
+
+    ROUTING_DECISION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "intent": {
+                "type": "string",
+                "enum": ["market", "risk", "order", "greeting", "context"],
+                "description": "Best-fit agent route for the current user turn."
+            },
+            "sub_intent": {
+                "type": "string",
+                "enum": [
+                    "general",
+                    "education",
+                    "market_analysis",
+                    "technical_indicator",
+                    "fundamental_analysis",
+                    "news",
+                    "history_lookup",
+                    "conversation_logic",
+                    "control"
+                ],
+                "description": "More specific purpose within the routed agent."
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence score from 0 to 1."
+            },
+            "control_signal": {
+                "type": "string",
+                "enum": ["none", "continue", "stop", "clarify"],
+                "description": "Short conversational control cue for brief replies like yes/no/oh."
+            },
+            "is_follow_up": {
+                "type": "boolean",
+                "description": "True when this message depends on the immediately preceding turn."
+            },
+            "is_history_query": {
+                "type": "boolean",
+                "description": "True when the user is asking about their own prior conversation, RFQ, or desk context."
+            },
+            "is_standalone_greeting": {
+                "type": "boolean",
+                "description": "True only for a fresh, standalone greeting that does not depend on prior context."
+            },
+            "reason": {
+                "type": "string",
+                "description": "One-line explanation grounded in the latest turn and recent conversation memory."
+            }
+        },
+        "required": [
+            "intent",
+            "sub_intent",
+            "confidence",
+            "control_signal",
+            "is_follow_up",
+            "is_history_query",
+            "is_standalone_greeting",
+            "reason"
+        ]
     }
 
     # =========================================================================
@@ -249,6 +330,7 @@ class Prompts:
         "You are AIDAAN, a professional interbank trading desk assistant for IDBX. "
         "Your behavior is sharp, concise, and actionable. You are NOT a generic chatbot. "
         "Sound like a trader: use terms like 'risk-on/off', 'flows', 'positioning', 'liquidity', 'pricing in'. "
+        "LANGUAGE: Mirror the user's specific linguistic blend (Hinglish, French-Hindi, etc.) natively. "
         "Avoid long explanations, academic definitions, and unnecessary disclaimers. "
         "Delegate to specialists for deep-dive market, risk, or liquidity analysis."
     )
@@ -277,6 +359,7 @@ class Prompts:
         "[Market Insight] (WHY in trading terms: flow, liquidity, macro) \n"
         "[Trade Implication] (What the trader should infer) \n"
         "[Optional Follow-up] (Offer next step like 'Want DV01?' or 'Need tenor breakdown?')"
+        "\n5. ANALYTICS INTEGRITY: If `get_market_news` returns `analytics_status: ERROR_FALLBACK`, inform the user that 'FinBERT sentiment analysis is currently unavailable' and report headlines without forced sentiment labels."
     )
 
     # =========================================================================
@@ -313,19 +396,51 @@ class Prompts:
     # =========================================================================
 
     COORDINATOR_ROUTER = """
-    Classify this trading desk request into exactly one category:
-    1. "market" - Macro analysis, stocks, news sentiment, financial statements, technical indicators (RSI, SMA, MACD).
-    2. "risk" - PV01/DV01, desk limit checks, portfolio compliance.
-    3. "order" - RFQ staging, trade execution, parsing parameters.
-    4. "greeting" - Hellos and general status.
-    5. "context" - Conversation history, desk profile, RFQ history, counterparties, user context.
+    You are AIDAAN's routing specialist.
+    Use the current user turn plus any provided RECENT_HISTORY_JSON and OPERATIONAL_CONTEXT_JSON.
+
+    Route this trading desk request into exactly one category:
+    1. "market" - Macro analysis, stocks, news sentiment, financial statements, technical indicators, historical series.
+    2. "risk" - PV01/DV01, desk limit checks, portfolio compliance, exposure discussion.
+    3. "order" - RFQ staging, execution intent, trade parameter capture, draft/amend ticket workflows.
+    4. "greeting" - A fresh standalone hello or status ping that does not rely on earlier context.
+    5. "context" - Conversation history, what we discussed earlier, user/desk profile, RFQ history, counterparties, audit trail.
+
+    Important routing rules:
+    - If the new message is a continuation, acknowledgement, answer, correction, or clarification of the immediately prior assistant turn, mark is_follow_up=true.
+    - When is_follow_up=true, prefer the domain of the prior specialist turn instead of "greeting".
+    - Do NOT mark a message as follow-up merely because it is short. If it contains a fresh explicit ask such as buy/sell/price/news/compare/analyze/why/what is happening/today/latest/now, treat it as a new query.
+    - Only choose "greeting" when the message is clearly standalone and not dependent on prior context.
+    - If the user is asking what they asked earlier, what was discussed, or any self/history lookup, choose "context".
+    - For brief ambiguous replies, use the recent conversation to infer continuation before falling back to greeting.
+    - Identify sub_intent carefully:
+      * "education" for explainers, overviews, definitions, "what is", "how does", "tell me about".
+      * "market_analysis" for outlook, trend, market view, what is happening.
+      * "technical_indicator" for RSI, MACD, SMA, EMA, Bollinger Bands, moving averages, support/resistance.
+      * "fundamental_analysis" for earnings, valuation, balance sheet, revenue, profit, market cap.
+      * "news" for latest developments, catalysts, headlines, announcements.
+      * "history_lookup" for prior conversation, prior requests, desk context, audit/history.
+      * "conversation_logic" for questions about whether a turn is a fresh query, follow-up, continuation, stop ownership, or how the assistant interpreted the conversation state.
+      * "control" for yes/no/ok/na/oh/continue/stop style replies.
+      * Otherwise use "general".
+    - Set control_signal:
+      * "continue" for yes/haan/do it/continue/proceed.
+      * "stop" for no/na/nahi/stop/cancel.
+      * "clarify" for oh/what?/huh?/confused/simplify.
+      * Otherwise "none".
+    - If intent="context", prefer sub_intent="history_lookup".
+    - If a market-domain question asks for explanation of a concept or market rather than a live trading read, choose intent="market" and sub_intent="education".
 
     Request: "{text}"
     Return ONLY raw JSON matching this schema:
     {{
       "intent": "market|risk|order|greeting|context",
+      "sub_intent": "general|education|market_analysis|technical_indicator|fundamental_analysis|news|history_lookup|conversation_logic|control",
       "confidence": 0.0,
-      "entities": {{}},
+      "control_signal": "none|continue|stop|clarify",
+      "is_follow_up": false,
+      "is_history_query": false,
+      "is_standalone_greeting": false,
       "reason": "one-line desk justification"
     }}
     """
@@ -345,6 +460,25 @@ class Prompts:
     Return RAW JSON ONLY.
     """
 
+    RISK_REQUEST_PARSER = """
+    You are AIDAAN's risk request parser.
+    Extract the most likely instrument and requested notional from the user's message.
+
+    Text: "{text}"
+
+    Return RAW JSON ONLY:
+    {{
+      "instrument": "DEFAULT|SONIA|SOFR|EUR/USD|GBP/USD|UK GILTS|BOND|FX",
+      "position_size": 0,
+      "confidence": 0.0
+    }}
+
+    Rules:
+    - If no reliable instrument is present, return "DEFAULT".
+    - Convert shorthand such as 25m or 1.5bn into base units.
+    - If no notional is stated, return null for position_size.
+    """
+
     RISK_SYNTHESIS = """
     You are AIDAAN's Professional Risk Analyst.
     Summarize the current risk metrics for the user.
@@ -353,9 +487,11 @@ class Prompts:
     Instrument: {instrument}
     Metric Context: {metrics}
 
+    CRITICAL INSTRUCTION: Keep the "reply" string EXTREMELY short (max 2-3 sentences). Do NOT write long essays or explanations.
+
     Provide a detailed, professional reply in JSON format:
     {{
-        "reply": "High-level summary of risk status",
+        "reply": "Concise 2-3 sentence limit summary.",
         "bullets": ["detailed metric 1", "detailed metric 2", ...]
     }}
     """
@@ -378,28 +514,61 @@ class Prompts:
     }}
     """
 
+    OPERATIONAL_ORCHESTRATION = """
+    User Query: "{text}"
+
+    You are AIDAAN's Operational Data Specialist for IDBX.
+
+    Instructions:
+    1. Use MCP tools to gather facts from canonical public data and aidaan-side conversation records.
+    2. Prefer public schema records for user, desk, limit, and counterparty context.
+    3. Prefer aidaan schema records for conversation memory, RFQ drafts, tool traces, and audit history.
+    4. Do not invent records. If the tool output is empty, say that cleanly.
+    5. Keep the tone premium and operational, not academic.
+
+    Return JSON:
+    {{
+      "reply": "[Direct Answer]\\n[Operational Detail]",
+      "bullets": ["Fact 1", "Fact 2", "Fact 3"]
+    }}
+    """
+
     MARKET_ORCHESTRATION = """
     User Query: "{text}"
 
     You are AIDAAN's Senior Interbank Market Analyst. 
 
-    Instructions:
-    1. STRUCTURE (STRICT): Your response MUST follow this 4-part structure:
-       [Direct Answer]
-       (Use Markdown Table for data like price, volume, change)
-       
-       [Market Insight]
-       (WHY in trading terms: flow, liquidity, macro, positioning)
-       
-       [Trade Implication]
-       (What should a trader infer/do)
-       
-       [Optional Follow-up]
-       (Offer next step, e.g., "Need RSI?", "Want 10-day trend?")
+    STRICT CONDITIONAL EXECUTION (MANDATORY):
+    - If the user provides a condition for a trade (e.g., "If RSI > 70", "If price hits X", "Agar level break hota hai"), you MUST evaluate that condition using tool data BEFORE calling any staging or execution tools (like `draft_rfq_ticket`).
+    - If the condition is NOT met, do NOT call `draft_rfq_ticket`. Instead, report the data, state clearly that the condition was not met, and explain why the trade was not staged.
+    - NEVER prioritize 'Risk Desk Clearance' over a failed 'Market Trigger Condition'. Both must pass for staging to occur.
 
-    2. LANGUAGE: Use professional desk terms (spreads widening, pricing in, flows).
-    3. DATA: Use MCP tools extensively. Output multi-row reports in clean Markdown Tables.
-    4. MISSION: WOW the trader with premium, high-density market intelligence.
+    Instructions:
+    1. First infer whether the request is:
+       - education: explanation of a concept, market, exchange, index, or how something works
+       - market_analysis: live or recent trend/outlook analysis
+       - technical_indicator: RSI, MACD, moving averages, bands, chart signals
+       - fundamental_analysis: earnings, valuation, market cap, financial performance
+       - news: recent headlines or catalysts
+
+    2. Response rules by mode:
+       - education:
+         * Do NOT force a trading setup.
+         * Explain clearly in plain professional language.
+         * Use sections like [Direct Answer], [How It Works], [Why It Matters], [Optional Follow-up].
+         * Only use tools if fresh market facts are truly needed.
+       - market_analysis / technical_indicator / fundamental_analysis / news:
+         * Use the trading desk structure:
+           [Direct Answer]
+           [Market Insight]
+           [Trade Implication]
+           [Optional Follow-up]
+         * Use Markdown Tables only when actual data is presented.
+         * Do not invent precision or unsupported figures.
+
+    3. If the current turn is a brief continuation such as yes/no/oh, use conversation memory and the prior assistant follow-up to continue, stop, or simplify appropriately.
+    4. LANGUAGE: Use professional desk terms where helpful, but keep educational answers understandable.
+    5. DATA: Use MCP tools only when needed for the user request.
 
     Return JSON:
     {{
@@ -411,11 +580,14 @@ class Prompts:
     GREETING_SYNTHESIS = """
     Generate a professional institutional greeting.
     User: {username}
+    Desk: {desk_name}
+    Role: {desk_title}
     Message: "{text}"
     Current soft limit: {soft_limit}
 
     Instructions:
     - Welcome the user by name.
+    - If desk context is available, acknowledge it naturally.
     - Mention their current EUR/USD soft limit professionally.
     - Sound like a premium trading assistant.
 

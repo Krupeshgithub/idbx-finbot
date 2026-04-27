@@ -11,6 +11,7 @@ changes to the agent logic.
 
 import json
 import logging
+from copy import deepcopy
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
@@ -72,7 +73,7 @@ class JSONRiskProvider(BaseRiskProvider):
         Look up metrics in the local dictionary with support for default fallbacks.
         """
         key = instrument.upper()
-        metrics = self._cache.get(key, self._cache.get("DEFAULT", {}))
+        metrics = deepcopy(self._cache.get(key, self._cache.get("DEFAULT", {})))
         
         # Scaling logic for sensitivity metrics (DV01)
         if position_size and "base_dv01" in metrics:

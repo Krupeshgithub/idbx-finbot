@@ -64,3 +64,22 @@ class ToolInvokeResponse(BaseModel):
     ok: bool
     result: Optional[Any] = None
     error: Optional[str] = None
+
+
+class KillSwitchStatusResponse(BaseModel):
+    scope: str = "venue"
+    venue: str = "global"
+    is_active: bool
+    reason: str
+    actor: Optional[str] = None
+    source: Optional[str] = None
+    conversation_id: Optional[str] = None
+    last_updated_at: Optional[str] = None
+    frozen_rfq_count: int = 0
+
+
+class KillSwitchUpdateRequest(BaseModel):
+    reason: str = Field(..., min_length=3, description="Operator reason for toggling the venue kill switch")
+    conversation_id: Optional[str] = None
+    source: str = "api"
+    payload: Dict[str, Any] = Field(default_factory=dict)

@@ -18,6 +18,7 @@ from app.services.aidaan.core.base import BaseAgent
 from app.schemas.aidaan import ActionItem, AidaanMessageResponse
 from app.core.prompts import Prompts
 from app.core.config.settings import settings
+from app.services.kill_switch import kill_switch_service
 from app.services.aidaan.trade_parsing import infer_instrument, parse_notional, parse_settlement, parse_tenor
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,22 @@ class OrderAgent(BaseAgent):
             size = parsed.get("size", 0)
             tenor = parsed.get("tenor", "Market")
             settlement = parsed.get("settlement", "Spot/T+2")
+
+            if kill_switch_service.is_active():
+                status = kill_switch_service.get_status()
+                return self.build_message_response(
+                    reply="Venue kill switch is active. I can parse the request, but I will not stage or draft any RFQ until the freeze is released.",
+                    bullets=[
+                        f"Instrument: {instrument}",
+                        f"Notional: {size:,} (Base Units)",
+                        f"Tenor: {tenor}",
+                        f"Settlement: {settlement}",
+                        f"Kill switch reason: {status.get('reason')}",
+                    ],
+                    actions=[],
+                    conversation_id=conversation_id,
+                    model_info=self.get_model_info(),
+                )
             
             reply = f"I've identified an institutional request for {instrument}. Preparing the staging ticket..."
             bullets = [
@@ -130,6 +147,23 @@ class OrderAgent(BaseAgent):
             size = parsed["size"]
             tenor = parsed["tenor"]
             settlement = parsed["settlement"]
+
+            if kill_switch_service.is_active():
+                status = kill_switch_service.get_status()
+                return self.build_message_response(
+                    reply="Venue kill switch is active. I captured the trade parameters, but drafting is blocked until the emergency freeze is lifted.",
+                    bullets=[
+                        f"Instrument: {instrument}",
+                        f"Notional: {int(size):,} (Base Units)" if size else "Notional: (missing)",
+                        f"Tenor: {tenor}",
+                        f"Settlement: {settlement}",
+                        f"Kill switch reason: {status.get('reason')}",
+                    ],
+                    actions=[],
+                    conversation_id=conversation_id,
+                    model_info=self.get_model_info(),
+                )
+
             reply = f"(Deterministic Mode) Drafting an RFQ ticket for {instrument}."
             bullets = [
                 f"Instrument: {instrument}",

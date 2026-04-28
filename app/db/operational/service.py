@@ -149,6 +149,7 @@ class OperationalDataService:
                 "recent_messages": [],
                 "recent_rfq_drafts": [],
                 "recent_tool_invocations": [],
+                "kill_switch_status": self.get_kill_switch_status(),
                 "recent_audit_events": [],
             }
         with get_db_session() as session:
@@ -156,8 +157,91 @@ class OperationalDataService:
                 "recent_messages": self.aidaan.get_recent_messages(session, conversation_id, limit=limit),
                 "recent_rfq_drafts": self.aidaan.get_recent_rfq_drafts(session, conversation_id, limit=limit),
                 "recent_tool_invocations": self.aidaan.get_recent_tool_invocations(session, conversation_id, limit=limit),
+                "kill_switch_status": self.get_kill_switch_status(),
                 "recent_audit_events": self.aidaan.get_recent_audit_events(session, conversation_id, limit=limit),
             }
+
+    def get_kill_switch_status(self, *, scope: str = "venue", venue: str = "global") -> Dict[str, Any]:
+        with get_db_session() as session:
+            latest_event = self.aidaan.get_latest_kill_switch_event(
+                session,
+                scope=scope,
+                venue=venue,
+            )
+            if latest_event is None:
+                return {
+                    "scope": scope,
+                    "venue": venue,
+                    "is_active": False,
+                    "reason": "Kill switch has not been activated.",
+                    "actor": None,
+                    "source": None,
+                    "conversation_id": None,
+                    "last_updated_at": None,
+                    "frozen_rfq_count": 0,
+                }
+            return {
+                "scope": latest_event["scope"],
+                "venue": latest_event["venue"],
+                "is_active": bool(latest_event["is_active"]),
+                "reason": latest_event["reason"],
+                "actor": latest_event["actor"],
+                "source": latest_event["source"],
+                "conversation_id": latest_event["conversation_id"],
+                "last_updated_at": latest_event["created_at"],
+                "frozen_rfq_count": int((latest_event.get("payload_json") or {}).get("frozen_rfq_count") or 0),
+            }
+
+    def record_kill_switch_event(
+        self,
+        *,
+        is_active: bool,
+        reason: str,
+        actor: Optional[str],
+        source: str = "api",
+        scope: str = "venue",
+        venue: str = "global",
+        conversation_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        with get_db_session() as session:
+            payload_data = dict(payload or {})
+            if is_active:
+                frozen_count = self.aidaan.freeze_pending_rfq_drafts(
+                    session,
+                    reason=reason,
+                )
+                payload_data["frozen_rfq_count"] = frozen_count
+            event = self.aidaan.store_kill_switch_event(
+                session,
+                is_active=is_active,
+                reason=reason,
+                actor=actor,
+                source=source,
+                scope=scope,
+                venue=venue,
+                conversation_id=conversation_id,
+                payload=payload_data,
+            )
+            self.aidaan.store_audit_event(
+                session,
+                conversation_id=conversation_id,
+                event_type="kill_switch_activated" if is_active else "kill_switch_released",
+                severity="critical" if is_active else "warning",
+                actor=actor,
+                summary=(
+                    f"Venue kill switch {'activated' if is_active else 'released'} "
+                    f"for {venue}."
+                ),
+                payload={
+                    "scope": scope,
+                    "venue": venue,
+                    "reason": reason,
+                    "source": source,
+                    **payload_data,
+                },
+            )
+            return event
 
     def get_greeting_context(self, identity: Optional[str], *, instrument: str = "EUR/USD") -> Dict[str, Any]:
         """
@@ -255,6 +339,7 @@ class OperationalDataService:
         tool_name: str,
         arguments: Dict[str, Any],
         result: Dict[str, Any],
+        status: str = "completed",
     ) -> None:
         resolved = self.resolve_user_context(username)
         with get_db_session() as session:
@@ -265,8 +350,9 @@ class OperationalDataService:
                 tool_name=tool_name,
                 arguments=arguments,
                 result=result,
+                status=status,
             )
-            if tool_name == "draft_rfq_ticket":
+            if tool_name == "draft_rfq_ticket" and status == "completed":
                 self.aidaan.store_rfq_draft(
                     session,
                     conversation_id=conversation_id,
@@ -281,9 +367,10 @@ class OperationalDataService:
                 session,
                 conversation_id=conversation_id,
                 event_type="tool_invocation",
-                summary=f"Tool '{tool_name}' executed.",
+                severity="warning" if status != "completed" else "info",
+                summary=f"Tool '{tool_name}' executed with status '{status}'.",
                 actor=username,
-                payload={"arguments": arguments, "result": result},
+                payload={"arguments": arguments, "result": result, "status": status},
             )
 
     def persist_login_event(self, username: str, success: bool) -> None:

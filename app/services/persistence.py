@@ -39,6 +39,7 @@ class PersistenceService:
         tool_name: str,
         arguments: Dict[str, Any],
         result: Dict[str, Any],
+        status: str = "completed",
     ) -> None:
         operational_data_service.persist_tool_invocation(
             username=username,
@@ -46,6 +47,7 @@ class PersistenceService:
             tool_name=tool_name,
             arguments=arguments,
             result=result,
+            status=status,
         )
 
     def persist_login_event(self, username: str, success: bool) -> None:

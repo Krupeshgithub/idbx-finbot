@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from app.api.v1.routes import (
     auth,
     diagnostics,
+    kill_switch,
     messages,
     tools,
     websocket
@@ -21,6 +22,9 @@ api_router.include_router(messages.router, tags=["aidaan"])
 
 # Tool Invocations
 api_router.include_router(tools.router, prefix="/tools", tags=["tools"])
+
+# Kill switch control plane
+api_router.include_router(kill_switch.router, prefix="/kill-switch", tags=["kill-switch"])
 
 # Diagnostics (safe introspection)
 api_router.include_router(diagnostics.router, tags=["diagnostics"])

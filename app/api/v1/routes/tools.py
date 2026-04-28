@@ -11,6 +11,7 @@ from app.schemas.aidaan import (
     ToolInvokeResponse
 )
 from app.services.persistence import persistence_service
+from app.services.kill_switch import KillSwitchBlockedError, kill_switch_service
 
 router = APIRouter()
 
@@ -33,6 +34,24 @@ async def invoke_tool(payload: ToolInvokeRequest):
         if not payload.user_id or payload.user_id.strip().lower() in ANONYMOUS_IDENTITIES
         else payload.user_id
     )
+
+    try:
+        kill_switch_service.assert_tool_allowed(
+            tool_name=payload.tool_name,
+            actor=resolved_username,
+            conversation_id=payload.arguments.get("conversation_id"),
+            arguments=payload.arguments,
+        )
+    except KillSwitchBlockedError as exc:
+        return ToolInvokeResponse(
+            ok=False,
+            result={
+                "blocked": True,
+                "reason": "venue_kill_switch_active",
+                "kill_switch_status": exc.status,
+            },
+            error=str(exc),
+        )
 
     if payload.tool_name == "draft_rfq_ticket":
         mcp_result = await llm_client.call_mcp_tool(

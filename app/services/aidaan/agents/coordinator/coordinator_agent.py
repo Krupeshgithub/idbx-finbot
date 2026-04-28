@@ -30,6 +30,7 @@ from app.services.aidaan.agents.greeting.greeting_agent import greeting_agent
 from app.services.aidaan.agents.context.context_agent import context_agent
 from app.services.aidaan.agents.operational.operational_agent import operational_agent
 from app.services.aidaan.runtime_context import runtime_context_service
+from app.services.kill_switch import kill_switch_service
 
 # Register agents with the global registry
 registry.register("market", market_agent)
@@ -543,6 +544,24 @@ class CoordinatorAgent(BaseAgent):
 
         # 1. Routing phase
         context = context or {}
+        if kill_switch_service.is_active() and kill_switch_service.request_has_trade_intent(text):
+            status = kill_switch_service.get_status()
+            logger.warning(
+                "[Coordinator] Kill switch blocked trade-intent request before routing | conversation_id=%s reason=%s",
+                conv_id,
+                status.get("reason"),
+            )
+            return self.build_message_response(
+                reply="Venue kill switch is active. I can acknowledge the request, but I will not stage, draft, or advance any trade-affecting workflow until the freeze is lifted.",
+                bullets=[
+                    "Trade-affecting request detected",
+                    "No RFQ draft or staging action was created",
+                    f"Kill switch reason: {status.get('reason')}",
+                ],
+                conversation_id=conv_id,
+                model_info=self.get_model_info(model_override="kill-switch-guard"),
+                latency_ms=(time.monotonic() - start_time) * 1000,
+            )
         routing = await self._route_intent(
             text,
             conversation_id=conv_id,

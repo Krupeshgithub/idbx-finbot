@@ -67,6 +67,8 @@ class Settings(BaseSettings):
 
     # --- System & Safety ---
     ENABLE_KILL_SWITCH: bool = True
+    KILL_SWITCH_ACTIVE: bool = False
+    KILL_SWITCH_REASON: str = "Kill switch is not active."
     MAX_PASSWORD_BYTES: int = 72
 
     # --- Multi-Language Support ---

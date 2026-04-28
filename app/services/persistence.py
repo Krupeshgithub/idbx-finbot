@@ -3,9 +3,12 @@ Higher-level persistence service for conversations, RFQs, and audit events.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 from app.db.operational.service import operational_data_service
+
+logger = logging.getLogger(__name__)
 
 
 class PersistenceService:
@@ -22,14 +25,22 @@ class PersistenceService:
         channel: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        operational_data_service.persist_message_exchange(
-            conversation_id=conversation_id,
-            username=username,
-            user_text=user_text,
-            response_payload=response_payload,
-            channel=channel,
-            context=context,
-        )
+        try:
+            operational_data_service.persist_message_exchange(
+                conversation_id=conversation_id,
+                username=username,
+                user_text=user_text,
+                response_payload=response_payload,
+                channel=channel,
+                context=context,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Persistence] Message exchange persistence failed; response already delivered | conversation_id=%s channel=%s error=%s",
+                conversation_id,
+                channel,
+                exc,
+            )
 
     def persist_tool_invocation(
         self,
@@ -39,17 +50,35 @@ class PersistenceService:
         tool_name: str,
         arguments: Dict[str, Any],
         result: Dict[str, Any],
+        status: str = "completed",
     ) -> None:
-        operational_data_service.persist_tool_invocation(
-            username=username,
-            conversation_id=conversation_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            result=result,
-        )
+        try:
+            operational_data_service.persist_tool_invocation(
+                username=username,
+                conversation_id=conversation_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                result=result,
+                status=status,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Persistence] Tool invocation persistence failed | conversation_id=%s tool=%s error=%s",
+                conversation_id,
+                tool_name,
+                exc,
+            )
 
     def persist_login_event(self, username: str, success: bool) -> None:
-        operational_data_service.persist_login_event(username, success)
+        try:
+            operational_data_service.persist_login_event(username, success)
+        except Exception as exc:
+            logger.warning(
+                "[Persistence] Login audit persistence failed | username=%s success=%s error=%s",
+                username,
+                success,
+                exc,
+            )
 
 
 persistence_service = PersistenceService()

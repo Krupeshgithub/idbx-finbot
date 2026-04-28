@@ -30,6 +30,7 @@ from app.services.aidaan.agents.greeting.greeting_agent import greeting_agent
 from app.services.aidaan.agents.context.context_agent import context_agent
 from app.services.aidaan.agents.operational.operational_agent import operational_agent
 from app.services.aidaan.runtime_context import runtime_context_service
+from app.services.kill_switch import kill_switch_service
 
 # Register agents with the global registry
 registry.register("market", market_agent)
@@ -416,14 +417,10 @@ class CoordinatorAgent(BaseAgent):
         return None
 
     @staticmethod
-    def _get_last_specialist_agent(conversation_id: Optional[str]) -> Optional[str]:
+    def _get_last_specialist_agent(history: List[Dict[str, Any]]) -> Optional[str]:
         """
-        Recover the last non-greeting specialist from persisted history.
+        Recover the last non-greeting specialist from recent history.
         """
-        if not conversation_id:
-            return None
-
-        history = runtime_context_service.get_recent_history(conversation_id)
         for item in reversed(history):
             agent_name = item.get("agent_name")
             if agent_name in {"market", "risk", "order", "operational", "context"}:
@@ -431,27 +428,17 @@ class CoordinatorAgent(BaseAgent):
         return None
 
     @staticmethod
-    def _has_pending_follow_up(conversation_id: Optional[str]) -> bool:
+    def _has_pending_follow_up(guidance: Dict[str, Any]) -> bool:
         """
         Detect whether the previous assistant turn left an unanswered follow-up prompt.
         """
-        if not conversation_id:
-            return False
-
-        history = runtime_context_service.get_recent_history(conversation_id)
-        guidance = runtime_context_service.build_continuity_guidance(history)
         return bool(guidance.get("pending_follow_up"))
 
     @staticmethod
-    def _get_pending_follow_up_owner(conversation_id: Optional[str]) -> Optional[str]:
+    def _get_pending_follow_up_owner(guidance: Dict[str, Any]) -> Optional[str]:
         """
         Recover which specialist owns the currently pending follow-up.
         """
-        if not conversation_id:
-            return None
-
-        history = runtime_context_service.get_recent_history(conversation_id)
-        guidance = runtime_context_service.build_continuity_guidance(history)
         owner = guidance.get("pending_follow_up_owner")
         logger.info(
             "[Coordinator] Pending follow-up owner resolved | owner=%s pending=%s",
@@ -459,6 +446,30 @@ class CoordinatorAgent(BaseAgent):
             guidance.get("pending_follow_up"),
         )
         return owner
+
+    @staticmethod
+    def _get_routing_memory(conversation_id: Optional[str]) -> Dict[str, Any]:
+        """
+        Load conversation memory once for coordinator routing.
+        """
+        if not conversation_id:
+            return {
+                "history": [],
+                "guidance": {},
+                "last_specialist_agent": None,
+                "has_pending_follow_up": False,
+                "pending_follow_up_owner": None,
+            }
+
+        history = runtime_context_service.get_recent_history(conversation_id)
+        guidance = runtime_context_service.build_continuity_guidance(history)
+        return {
+            "history": history,
+            "guidance": guidance,
+            "last_specialist_agent": CoordinatorAgent._get_last_specialist_agent(history),
+            "has_pending_follow_up": CoordinatorAgent._has_pending_follow_up(guidance),
+            "pending_follow_up_owner": CoordinatorAgent._get_pending_follow_up_owner(guidance),
+        }
 
     @staticmethod
     def _should_escalate_route_check(text: str, parsed: Dict[str, Any]) -> bool:
@@ -543,6 +554,24 @@ class CoordinatorAgent(BaseAgent):
 
         # 1. Routing phase
         context = context or {}
+        if kill_switch_service.is_active() and kill_switch_service.request_has_trade_intent(text):
+            status = kill_switch_service.get_status()
+            logger.warning(
+                "[Coordinator] Kill switch blocked trade-intent request before routing | conversation_id=%s reason=%s",
+                conv_id,
+                status.get("reason"),
+            )
+            return self.build_message_response(
+                reply="Venue kill switch is active. I can acknowledge the request, but I will not stage, draft, or advance any trade-affecting workflow until the freeze is lifted.",
+                bullets=[
+                    "Trade-affecting request detected",
+                    "No RFQ draft or staging action was created",
+                    f"Kill switch reason: {status.get('reason')}",
+                ],
+                conversation_id=conv_id,
+                model_info=self.get_model_info(model_override="kill-switch-guard"),
+                latency_ms=(time.monotonic() - start_time) * 1000,
+            )
         routing = await self._route_intent(
             text,
             conversation_id=conv_id,
@@ -599,9 +628,10 @@ class CoordinatorAgent(BaseAgent):
             The ID of the target agent or None.
         """
         lowered = text.strip().lower()
-        last_specialist_agent = self._get_last_specialist_agent(conversation_id)
-        has_pending_follow_up = self._has_pending_follow_up(conversation_id)
-        pending_follow_up_owner = self._get_pending_follow_up_owner(conversation_id)
+        routing_memory = self._get_routing_memory(conversation_id)
+        last_specialist_agent = routing_memory["last_specialist_agent"]
+        has_pending_follow_up = routing_memory["has_pending_follow_up"]
+        pending_follow_up_owner = routing_memory["pending_follow_up_owner"]
         continuity_target = pending_follow_up_owner or last_specialist_agent
 
         heuristic_decision = self._heuristic_route_decision(

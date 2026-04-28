@@ -11,6 +11,7 @@ from app.core.config.settings import settings as app_settings
 from app.core.logging_config import setup_logging
 from app.db.bootstrap import initialize_database
 from app.db.config import get_database_config
+from app.services.kill_switch import kill_switch_service
 
 # Configure structured logging before anything else
 setup_logging()
@@ -50,6 +51,7 @@ async def health_check():
         "status": "healthy",
         "database_backend": db_config.backend,
         "alloydb_enabled": db_config.alloydb_enabled,
+        "kill_switch_active": kill_switch_service.is_active(),
     }
 
 

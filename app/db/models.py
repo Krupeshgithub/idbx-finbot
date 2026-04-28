@@ -200,6 +200,22 @@ class ToolInvocation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class KillSwitchEvent(Base):
+    __tablename__ = "kill_switch_events"
+    __table_args__ = table_args_for(__tablename__)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=_uuid)
+    scope: Mapped[str] = mapped_column(String(64), default="venue", index=True)
+    venue: Mapped[str] = mapped_column(String(64), default="global", index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    actor: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    source: Mapped[str] = mapped_column(String(64), default="api")
+    conversation_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    payload_json: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     __table_args__ = table_args_for(__tablename__)

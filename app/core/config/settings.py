@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # --- API Credentials (Loaded from Environment) ---
     GOOGLE_API_KEY: Optional[str] = None
     ALPHA_VANTAGE_API_KEY: Optional[str] = None
+    HF_TOKEN: Optional[str] = None
 
     # --- Google Cloud Platform ---
     GOOGLE_CLOUD_PROJECT: Optional[str] = None
@@ -50,8 +51,8 @@ class Settings(BaseSettings):
     
     # --- Vertex AI ---
     VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
-    VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-3.1-pro-preview"
-    VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-3.1-flash-lite-preview"
+    VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
+    VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-2.5-flash-lite"
     VERTEX_AI_API_VERSION: str = "v1"
     VERTEX_AI_TEMPERATURE: float = 0.2
     VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192
@@ -63,10 +64,14 @@ class Settings(BaseSettings):
     VERTEX_AI_ENABLE_GOOGLE_SEARCH: bool = False
     VERTEX_AI_ENABLE_URL_CONTEXT: bool = False
     VERTEX_AI_ENABLE_CODE_EXECUTION: bool = False
+    VERTEX_AI_ENABLE_CONTEXT_CACHING: bool = True
+    VERTEX_AI_CONTEXT_CACHE_TTL_SECONDS: int = 3600
     FINBERT_ENDPOINT_ID: Optional[str] = None
 
     # --- System & Safety ---
     ENABLE_KILL_SWITCH: bool = True
+    KILL_SWITCH_ACTIVE: bool = False
+    KILL_SWITCH_REASON: str = "Kill switch is not active."
     MAX_PASSWORD_BYTES: int = 72
 
     # --- Multi-Language Support ---
@@ -78,6 +83,12 @@ class Settings(BaseSettings):
     DB_ECHO: bool = False
     DB_AUTO_CREATE: bool = True
     DB_AUTO_SEED: bool = True
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: float = 2.0
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+    DB_CONNECT_TIMEOUT_SECONDS: int = 3
+    DB_STATEMENT_TIMEOUT_MS: int = 2500
     DB_PUBLIC_SCHEMA: str = "public"
     DB_AIDAAN_SCHEMA: str = "aidaan"
     AIDAAN_HISTORY_WINDOW: int = 5
@@ -132,10 +143,19 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-def setup_gcp_credentials():
+def setup_infrastructure():
     """
-    Ensures GOOGLE_APPLICATION_CREDENTIALS is set for all Google Cloud SDKs.
+    Ensures environment variables like GOOGLE_APPLICATION_CREDENTIALS and HF_TOKEN 
+    are set correctly for underlying SDKs.
     """
+    # 1. Hugging Face Authentication
+    if settings.HF_TOKEN:
+        os.environ["HF_TOKEN"] = settings.HF_TOKEN
+        # Also set the older variant just in case
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = settings.HF_TOKEN
+        logger.info("[Auth] Hugging Face Token exported to environment.")
+
+    # 2. Google Cloud Credentials
     if settings.VERTEX_AI_SERVICE_ACCOUNT_JSON:
         try:
             credential_dir = Path(tempfile.gettempdir())
@@ -162,4 +182,4 @@ def setup_gcp_credentials():
 
 
 # Run setup immediately on module load
-setup_gcp_credentials()
+setup_infrastructure()

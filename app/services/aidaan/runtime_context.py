@@ -36,6 +36,20 @@ class RuntimeContextService:
             limit=settings.AIDAAN_HISTORY_WINDOW,
         )
 
+    def _truncate_payload(self, data: Any, max_len: int = 500) -> Any:
+        """
+        Recursively truncate large strings or lists in a JSON-like object.
+        """
+        if isinstance(data, str):
+            if len(data) > max_len:
+                return data[:max_len] + "... [TRUNCATED]"
+            return data
+        if isinstance(data, list):
+            return [self._truncate_payload(item, max_len) for item in data[:10]]
+        if isinstance(data, dict):
+            return {k: self._truncate_payload(v, max_len) for k, v in data.items()}
+        return data
+
     def get_operational_context(
         self,
         *,
@@ -56,7 +70,20 @@ class RuntimeContextService:
         if username:
             payload.update(operational_data_service.get_operational_snapshot(username))
         if conversation_id:
-            payload.update(operational_data_service.get_conversation_bundle(conversation_id, limit=5))
+            bundle = operational_data_service.get_conversation_bundle(conversation_id, limit=5)
+            # REDACTION: Tool results and audit payloads can be huge and cause context leakage/hallucination.
+            # We truncate them here to keep the prompt focused on intent and state, not raw data dumps.
+            if "recent_tool_invocations" in bundle:
+                bundle["recent_tool_invocations"] = [
+                    {**item, "result_json": "[TRUNCATED for relevance]"}
+                    for item in bundle["recent_tool_invocations"]
+                ]
+            if "recent_audit_events" in bundle:
+                bundle["recent_audit_events"] = [
+                    {**item, "payload_json": "[TRUNCATED for relevance]"}
+                    for item in bundle["recent_audit_events"]
+                ]
+            payload.update(bundle)
         return payload
 
     def build_continuity_guidance(self, history: List[Dict[str, Any]]) -> Dict[str, Any]:

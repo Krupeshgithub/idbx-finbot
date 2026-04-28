@@ -67,6 +67,7 @@ class LLMClient:
         }
         self._mcp_inprocess_server = None
         self._vertex_concurrency = asyncio.Semaphore(settings.VERTEX_AI_MAX_CONCURRENT_REQUESTS)
+        self._context_caches: Dict[str, Any] = {}  # key: hash(model+instruction), value: cached_content_name
 
         self._ensure_client()
 
@@ -425,18 +426,25 @@ class LLMClient:
     @staticmethod
     def _build_timestamp_instruction() -> str:
         """
-        Inject the exact current server timestamp into the hidden system instruction.
-
-        This keeps time-awareness centralized and avoids duplicating timestamp
-        handling across agent prompts.
+        Inject a rounded server timestamp into the hidden system instruction.
+        
+        Rounding to the nearest hour ensures the system instruction remains static 
+        for an hour, enabling high-performance Prompt Caching while maintaining
+        reasonable time-awareness for the model.
         """
         now_utc = datetime.datetime.now(datetime.timezone.utc)
+        # Round to nearest hour: replace minute, second, microsecond with 0
+        rounded_utc = now_utc.replace(minute=0, second=0, microsecond=0)
+        
         now_local = now_utc.astimezone()
+        rounded_local = now_local.replace(minute=0, second=0, microsecond=0)
+        
         return (
-            "Runtime Clock:\n"
-            f"- Current UTC time: {now_utc.isoformat()}\n"
-            f"- Current server local time: {now_local.isoformat()}\n"
-            "Treat this runtime clock as authoritative for any time-sensitive reasoning."
+            "Runtime Clock (Rounded to Hour):\n"
+            f"- Current UTC time: {rounded_utc.isoformat()}\n"
+            f"- Current server local time: {rounded_local.isoformat()}\n"
+            "Treat this clock as a general reference for today's date and hour. "
+            "For sub-minute trade timing, rely on live tool-call results."
         )
 
     def _build_json_config(self, schema: Optional[Any] = None, system_instruction: Optional[str] = None) -> types.GenerateContentConfig:
@@ -484,6 +492,100 @@ class LLMClient:
             return [types.Tool(code_execution=types.CodeExecution())]
             
         return []
+
+    def _get_cache_resource_key(self, model: str, system_instruction: str) -> str:
+        """
+        Create a stable key for identifying a context cache.
+        """
+        payload = f"{model}:{system_instruction}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    async def _get_or_create_context_cache(
+        self, 
+        model: str, 
+        system_instruction: str, 
+        trace_id: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Manage the lifecycle of a Vertex AI Context Cache.
+        Returns the full resource name of the cache if successful.
+        """
+        if not settings.VERTEX_AI_ENABLE_CONTEXT_CACHING:
+            return None
+
+        client = self._ensure_client()
+        if client is None:
+            return None
+
+        cache_key = self._get_cache_resource_key(model, system_instruction)
+        
+        # Check in-memory first
+        existing_cache = self._context_caches.get(cache_key)
+        if existing_cache:
+            # Basic validation: Check if it still exists on the server? 
+            # For brevity and speed, we trust the in-memory cache until it fails.
+            return existing_cache
+
+        try:
+            started = time.monotonic()
+            
+            # Verify token count meets minimum threshold (1024 tokens)
+            token_resp = await asyncio.get_event_loop().run_in_executor(
+                _executor,
+                lambda: client.models.count_tokens(
+                    model=model,
+                    contents=system_instruction
+                )
+            )
+            token_count = token_resp.total_tokens
+            if token_count < 1024:
+                logger.info(
+                    "[LLMClient][%s] Skipping Context Cache | token_count=%s (min=1024) | model=%s",
+                    trace_id or "no-trace",
+                    token_count,
+                    model
+                )
+                return None
+
+            logger.info(
+                "[LLMClient][%s] Creating new Context Cache | model=%s | tokens=%s",
+                trace_id or "no-trace",
+                model,
+                token_count
+            )
+            
+            # Note: Context Caching requires the system instruction to be part of the cache
+            # The SDK expects types.CreateCachedContentConfig
+            cached_content = await asyncio.get_event_loop().run_in_executor(
+                _executor,
+                lambda: client.caches.create(
+                    model=model,
+                    config=types.CreateCachedContentConfig(
+                        system_instruction=system_instruction,
+                        display_name=f"aidaan-cache-{cache_key[:8]}",
+                        ttl=f"{settings.VERTEX_AI_CONTEXT_CACHE_TTL_SECONDS}s",
+                    ),
+                )
+            )
+            
+            cache_name = cached_content.name
+            self._context_caches[cache_key] = cache_name
+            
+            logger.info(
+                "[LLMClient][%s] Context Cache created | name=%s | latency_ms=%s",
+                trace_id or "no-trace",
+                cache_name,
+                self._elapsed_ms(started)
+            )
+            return cache_name
+        except Exception as exc:
+            # Log but don't fail; falling back to non-cached generation is safer
+            logger.warning(
+                "[LLMClient][%s] Failed to create Context Cache: %s",
+                trace_id or "no-trace",
+                exc
+            )
+            return None
 
     def _clean_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -545,7 +647,7 @@ class LLMClient:
         self,
         prompt: str,
         model_override: Optional[str] = None,
-        retries: int = 2,
+        retries: int = 3,
         use_mcp_tools: bool = False,
         tool_callback: Optional[Callable[[str], Any]] = None,
         response_schema: Optional[Any] = None,
@@ -623,6 +725,21 @@ class LLMClient:
         # Choose config: Hybrid/Text config if search is enabled, else strict JSON config
         config = self._build_text_config(system_instruction=system_instruction) if use_hybrid_mode else self._build_json_config(schema=response_schema, system_instruction=system_instruction)
 
+        # Apply Context Caching if enabled and compatible
+        # Note: We apply this AFTER building the config because building the config 
+        # applies the Multi-Language and Timestamp instructions which we want cached.
+        if settings.VERTEX_AI_ENABLE_CONTEXT_CACHING and config.system_instruction:
+            cache_name = await self._get_or_create_context_cache(
+                model=model_name,
+                system_instruction=config.system_instruction,
+                trace_id=trace_id
+            )
+            if cache_name:
+                config.cached_content = cache_name
+                # IMPORTANT: When using a cache, the system_instruction must be cleared 
+                # from the request config to avoid redundancy/errors.
+                config.system_instruction = None
+
         for attempt in range(retries):
             try:
                 response = await self._run_generate_content(
@@ -670,8 +787,12 @@ class LLMClient:
                     exc,
                 )
                 if attempt < retries - 1:
-                    # Exponential Backoff with Jitter
-                    delay = (2 ** attempt) + (time.time() % 1)
+                    is_429 = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+                    # Exponential Backoff with Jitter and 429-specific padding
+                    base_delay = 2 ** attempt
+                    jitter = (time.time() % 1)
+                    delay = (base_delay * 3 + 2 + jitter) if is_429 else (base_delay + jitter)
+                    
                     logger.info("[LLMClient][%s] Retrying generate_json in %0.2fs due to: %s", trace_id, delay, exc)
                     await asyncio.sleep(delay)
                 else:
@@ -831,9 +952,17 @@ class LLMClient:
                             schema=response_schema,
                             system_instruction=system_instruction,
                         )
+                        # Speed Optimization: Use the faster default model (Flash) for final synthesis
+                        # after the reasoning model (Pro) has completed its tool calls and analysis.
+                        synthesis_model = self._default_model_name
+                        logger.info(
+                            "[LLMClient][%s] Switching to synthesis model: %s",
+                            trace_id,
+                            synthesis_model
+                        )
                         response = await self._run_generate_content(
                             client=client,
-                            model=model_name,
+                            model=synthesis_model,
                             contents=contents,
                             config=config,
                             trace_id=trace_id,
@@ -878,7 +1007,11 @@ class LLMClient:
                         exc,
                     )
                     if attempt < retries - 1:
-                        delay = (2 ** attempt) + (time.time() % 1)
+                        # Exponential Backoff with extra delay for 429
+                        base_delay = 2 ** attempt
+                        jitter = (time.time() % 1)
+                        delay = (base_delay * 3 + 2 + jitter) if is_429 else (base_delay + jitter)
+                        
                         logger.info(
                             "[LLMClient][%s] MCP tool loop retry sleep | delay_s=%0.2f",
                             trace_id or "no-trace",
@@ -912,11 +1045,24 @@ class LLMClient:
             return ""
 
         try:
+            config = self._build_text_config()
+            
+            # Apply Context Caching for text generation
+            if settings.VERTEX_AI_ENABLE_CONTEXT_CACHING and config.system_instruction:
+                cache_name = await self._get_or_create_context_cache(
+                    model=model_name,
+                    system_instruction=config.system_instruction,
+                    trace_id="text-gen"
+                )
+                if cache_name:
+                    config.cached_content = cache_name
+                    config.system_instruction = None
+
             response = await self._run_generate_content(
                 client=client,
                 model=model_name,
                 contents=prompt,
-                config=self._build_text_config(),
+                config=config,
             )
             text = (response.text or "").strip()
             

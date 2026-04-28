@@ -13,12 +13,14 @@ from app.db.base import Base
 from app.db.models import User
 from app.db.schema_config import is_read_only_table, schema_for_table, schemas_enabled
 from app.db.seed import seed_synthetic_data
-from app.db.session import engine, get_db_session
+from app.db.session import engine, get_db_session, warm_database_pool
 
 logger = logging.getLogger(__name__)
 
 
 def initialize_database() -> None:
+    warm_database_pool()
+
     if settings.DB_AUTO_CREATE:
         if schemas_enabled():
             schema_name = schema_for_table("conversations")

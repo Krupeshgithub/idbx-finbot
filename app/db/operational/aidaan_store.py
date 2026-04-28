@@ -7,10 +7,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from sqlalchemy import desc, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config.settings import settings
 from app.db.operational.base import count_rows, fetch_all, insert_row
+from app.db.models import KillSwitchEvent, RFQDraft
 
 
 class AidaanStoreRepository:
@@ -65,6 +67,35 @@ class AidaanStoreRepository:
             order_desc=True,
             limit=limit,
         )
+
+    def get_latest_kill_switch_event(
+        self,
+        session: Session,
+        *,
+        scope: str = "venue",
+        venue: str = "global",
+    ) -> Optional[Dict[str, Any]]:
+        stmt = (
+            select(KillSwitchEvent)
+            .where(KillSwitchEvent.scope == scope, KillSwitchEvent.venue == venue)
+            .order_by(desc(KillSwitchEvent.created_at))
+            .limit(1)
+        )
+        event = session.execute(stmt).scalar_one_or_none()
+        if event is None:
+            return None
+        return {
+            "id": str(event.id),
+            "scope": event.scope,
+            "venue": event.venue,
+            "is_active": event.is_active,
+            "reason": event.reason,
+            "actor": event.actor,
+            "source": event.source,
+            "conversation_id": event.conversation_id,
+            "payload_json": event.payload_json,
+            "created_at": event.created_at.isoformat(),
+        }
 
     def ensure_conversation(
         self,
@@ -221,6 +252,54 @@ class AidaanStoreRepository:
             },
         )
 
+    def store_kill_switch_event(
+        self,
+        session: Session,
+        *,
+        is_active: bool,
+        reason: str,
+        actor: Optional[str],
+        source: str = "api",
+        scope: str = "venue",
+        venue: str = "global",
+        conversation_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return insert_row(
+            session,
+            schema=self.schema,
+            table_name="kill_switch_events",
+            values={
+                "id": self._new_id(),
+                "scope": scope,
+                "venue": venue,
+                "is_active": is_active,
+                "reason": reason,
+                "actor": actor,
+                "source": source,
+                "conversation_id": conversation_id,
+                "payload_json": payload or {},
+                "created_at": datetime.utcnow(),
+            },
+        )
+
+    def freeze_pending_rfq_drafts(
+        self,
+        session: Session,
+        *,
+        reason: str,
+    ) -> int:
+        stmt = (
+            update(RFQDraft)
+            .where(RFQDraft.status.in_(("draft", "draft_prepared")))
+            .values(
+                status="frozen_by_kill_switch",
+                updated_at=datetime.utcnow(),
+            )
+        )
+        result = session.execute(stmt)
+        return int(result.rowcount or 0)
+
     def get_table_counts(self, session: Session) -> Dict[str, int]:
         return {
             table_name: count_rows(session, schema=self.schema, table_name=table_name)
@@ -233,6 +312,7 @@ class AidaanStoreRepository:
                 "messages",
                 "rfq_drafts",
                 "tool_invocations",
+                "kill_switch_events",
                 "audit_events",
             ]
         }

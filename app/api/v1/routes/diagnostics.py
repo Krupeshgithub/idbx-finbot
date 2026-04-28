@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from app.core.cache import cache
 from app.core.llm_client import llm_client
 from app.core.config.settings import settings
+from app.services.kill_switch import kill_switch_service
 
 
 router = APIRouter()
@@ -49,5 +50,6 @@ async def diagnostics_config():
             "backend": cache_backend,
             "redis_url": settings.REDIS_URL,
         },
+        "kill_switch": kill_switch_service.get_status(),
     }
 

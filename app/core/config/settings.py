@@ -52,12 +52,14 @@ class Settings(BaseSettings):
     # --- Vertex AI ---
     VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
     VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
-    VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-2.5-flash-lite"
+    VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-2.5-flash"
     VERTEX_AI_API_VERSION: str = "v1"
     VERTEX_AI_TEMPERATURE: float = 0.2
     VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192
     VERTEX_AI_MAX_WORKERS: int = 12
-    VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 4
+    VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 8
+    VERTEX_AI_REQUEST_TIMEOUT_SECONDS: int = 120  # 2 minutes timeout for Gemini API calls
+    VERTEX_AI_MAX_TOOLS_PER_TURN: int = 10  # Limit tools per turn to prevent context overflow
     VERTEX_AI_USE_EXPRESS_MODE: bool = True
     VERTEX_AI_SERVICE_ACCOUNT_FILE: Optional[str] = None
     VERTEX_AI_SERVICE_ACCOUNT_JSON: Optional[str] = None
@@ -83,15 +85,19 @@ class Settings(BaseSettings):
     DB_ECHO: bool = False
     DB_AUTO_CREATE: bool = True
     DB_AUTO_SEED: bool = True
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
-    DB_POOL_TIMEOUT: float = 2.0
-    DB_POOL_RECYCLE_SECONDS: int = 1800
-    DB_CONNECT_TIMEOUT_SECONDS: int = 3
-    DB_STATEMENT_TIMEOUT_MS: int = 2500
+    DB_POOL_ENABLED: bool = True  # Enable connection pooling
+    DB_POOL_SIZE: int = 20  # Increase from 5 to 20
+    DB_MAX_OVERFLOW: int = 40  # Increase from 10 to 40
+    DB_POOL_TIMEOUT: float = 5.0  # Increase from 2.0 to 5.0
+    DB_POOL_RECYCLE_SECONDS: int = 3600  # Increase from 60 to 3600
+    DB_CONNECT_TIMEOUT_SECONDS: int = 10  # Increase from 3 to 10
+    DB_STATEMENT_TIMEOUT_MS: int = 5000  # Increase from 2500 to 5000
     DB_PUBLIC_SCHEMA: str = "public"
     DB_AIDAAN_SCHEMA: str = "aidaan"
-    AIDAAN_HISTORY_WINDOW: int = 5
+    AIDAAN_HISTORY_WINDOW: int = 10  # Maximum conversation history messages to load
+    AIDAAN_MAX_TOOL_INVOCATIONS: int = 10  # Maximum tool invocations to load
+    AIDAAN_MAX_RFQ_DRAFTS: int = 5  # Maximum RFQ drafts to load
+    AIDAAN_MAX_AUDIT_EVENTS: int = 5  # Maximum audit events to load
     ALLOYDB_ENABLED: bool = False
     ALLOYDB_USE_AUTH_PROXY: bool = False
     ALLOYDB_HOST: str = "127.0.0.1"
@@ -104,7 +110,7 @@ class Settings(BaseSettings):
     ALLOYDB_CLUSTER_ID: Optional[str] = None
     ALLOYDB_INSTANCE_ID: Optional[str] = None
     ALLOYDB_INSTANCE_URI: Optional[str] = None
-    ALLOYDB_SSL_MODE: str = "require"
+    ALLOYDB_SSL_MODE: str = "disable"
 
     # --- Infrastructure (Redis/Cache) ---
     REDIS_URL: str = "redis://localhost:6379/0"

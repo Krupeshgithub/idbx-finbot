@@ -29,6 +29,13 @@ class DLPClient:
         self.client = None
         self.parent = None
 
+    def initialize(self) -> bool:
+        """
+        Explicitly initialize the DLP client.
+        Call this at startup to avoid first-request latency.
+        """
+        return self._ensure_client()
+
     def _ensure_client(self) -> bool:
         """Lazy initializer for the DLP client."""
         if self.client is not None:

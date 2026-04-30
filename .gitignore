@@ -216,7 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-temp.py
+temp*
 verify_phase1.py
 test_frontend.py
 test_frontend.html
@@ -228,3 +228,8 @@ eval
 .pycache
 scratch
 frontend
+migrations
+backup.sql
+check_schema.py
+QUICK_TEST_COMMANDS.sh
+run_migration.py

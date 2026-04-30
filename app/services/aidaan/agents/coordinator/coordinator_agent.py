@@ -29,6 +29,7 @@ from app.services.aidaan.agents.order.order_agent import order_agent
 from app.services.aidaan.agents.greeting.greeting_agent import greeting_agent
 from app.services.aidaan.agents.context.context_agent import context_agent
 from app.services.aidaan.agents.operational.operational_agent import operational_agent
+from app.services.aidaan.agents.calculation.calculation_agent import calculation_agent
 from app.services.aidaan.runtime_context import runtime_context_service
 from app.services.kill_switch import kill_switch_service
 
@@ -39,6 +40,7 @@ registry.register("order", order_agent)
 registry.register("greeting", greeting_agent)
 registry.register("context", context_agent)
 registry.register("operational", operational_agent)
+registry.register("calculation", calculation_agent)
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +265,71 @@ class CoordinatorAgent(BaseAgent):
             return True
         return False
 
+    def _is_out_of_domain(self, lowered_text: str) -> bool:
+        """
+        Fast heuristic check for obviously out-of-domain questions.
+        Rejects non-financial queries before expensive DB/LLM operations.
+        
+        Returns True if the query is clearly outside financial/trading domain.
+        """
+        normalized_text = self._normalize_text(lowered_text)
+        
+        # Personal/social questions that have no financial context
+        out_of_domain_patterns = [
+            r"\b(marriage|wedding|sadi|shadi)\b",
+            r"\b(wife|husband|spouse|girlfriend|boyfriend)\b",
+            r"\b(krishna|ram|shiva|jesus|allah|god|bhagwan|deity)\b",
+            r"\b(horoscope|astrology|kundli|zodiac)\b",
+            r"\b(recipe|cooking|food preparation)\b",
+            r"\b(movie|film|cinema|bollywood|hollywood)\b",
+            r"\b(cricket|football|sports|match score)\b",
+            r"\b(weather forecast|temperature|rain)\b",
+            r"\b(health|medical|doctor|disease|medicine)\b",
+            r"\b(travel|vacation|holiday|tourism)\b",
+        ]
+        
+        # Check if query contains ONLY out-of-domain terms with NO financial terms
+        financial_terms = {
+            "stock", "price", "market", "trade", "buy", "sell", "invest", "portfolio",
+            "risk", "return", "bond", "equity", "forex", "crypto", "bitcoin", "eth",
+            "ticker", "quote", "volume", "chart", "analysis", "rsi", "macd", "sma",
+            "revenue", "earnings", "profit", "loss", "dividend", "yield", "rate",
+            "fund", "asset", "liability", "capital", "liquidity", "hedge", "option",
+            "future", "derivative", "commodity", "currency", "exchange", "index"
+        }
+        
+        # If text contains any financial term, it's in-domain
+        if any(term in normalized_text for term in financial_terms):
+            return False
+        
+        # Check for out-of-domain patterns
+        for pattern in out_of_domain_patterns:
+            if re.search(pattern, normalized_text):
+                logger.info(
+                    "[Coordinator] Out-of-domain heuristic matched | pattern=%s text=%s",
+                    pattern,
+                    normalized_text[:160],
+                )
+                return True
+        
+        # Additional check: Personal information without financial context
+        personal_info_patterns = [
+            r"^(my|mera|meri)\s+(name|age|height|weight|looks?|appearance)",
+            r"^(i am|main)\s+(handsome|beautiful|smart|tall|short)",
+            r"(kab|when)\s+(hogi|hoga|will happen|will be)",
+        ]
+        
+        for pattern in personal_info_patterns:
+            if re.search(pattern, normalized_text):
+                logger.info(
+                    "[Coordinator] Personal info without financial context | pattern=%s text=%s",
+                    pattern,
+                    normalized_text[:160],
+                )
+                return True
+        
+        return False
+
     def _heuristic_route_decision(
         self,
         text: str,
@@ -327,8 +394,32 @@ class CoordinatorAgent(BaseAgent):
                 confidence=0.97,
             ), "order_keyword")
 
+        # Phase 4 Optimization: Expanded keyword sets
         technical_keywords = {"sma", "macd", "rsi", "ema", "bollinger", "stochastic", "indicator", "chart", "trend"}
         risk_keywords = {"dv01", "pv01", "var 95", "stress test", "risk capital", "hard limit", "risk desk"}
+        crypto_keywords = {"btc", "eth", "bitcoin", "ethereum", "solana", "sol", "xrp", "ripple", "crypto", "defi", "nft", "bnb", "doge", "dogecoin", "avax", "ada", "cardano"}
+        macro_keywords = {"fed funds", "federal funds", "yield curve", "treasury", "10y yield", "2y yield", "cpi", "inflation", "gdp", "unemployment", "fomc", "basis points", "bps", "rate hike", "rate cut"}
+        
+        # Phase 4: New keyword sets for better heuristic coverage
+        investment_keywords = {
+            "invest", "investment", "portfolio", "allocation", "diversify", "diversification",
+            "asset", "wealth", "retirement", "savings", "mutual fund", "etf", "index fund"
+        }
+        
+        educational_keywords = {
+            "explain", "what is", "how does", "tell me about", "overview", "basics",
+            "introduction", "guide", "tutorial", "learn", "understand", "meaning"
+        }
+        
+        comparison_keywords = {
+            "compare", "comparison", "vs", "versus", "difference between", "better",
+            "worse", "which one", "which is", "should i choose"
+        }
+        
+        sentiment_keywords = {
+            "sentiment", "bullish", "bearish", "optimistic", "pessimistic", "mood",
+            "feeling", "opinion", "view", "outlook", "forecast"
+        }
 
         # Priority 1: If both market and risk elements exist, route to market_agent (the orchestrator)
         if any(k in lowered for k in technical_keywords) and any(k in lowered for k in risk_keywords):
@@ -338,6 +429,58 @@ class CoordinatorAgent(BaseAgent):
                 sub_intent="technical_indicator",
                 confidence=0.99,
             ), "multi_agent_market_first")
+
+        # Phase 4: Investment/allocation queries
+        if any(k in lowered for k in investment_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Investment/allocation keyword matched heuristic.",
+                sub_intent="education",
+                confidence=0.92,
+            ), "investment_keyword")
+
+        # Phase 4: Educational queries
+        if any(k in lowered for k in educational_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Educational keyword matched heuristic.",
+                sub_intent="education",
+                confidence=0.90,
+            ), "educational_keyword")
+
+        # Phase 4: Comparison queries
+        if any(k in lowered for k in comparison_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Comparison keyword matched heuristic.",
+                sub_intent="market_analysis",
+                confidence=0.93,
+            ), "comparison_keyword")
+
+        # Phase 4: Sentiment queries
+        if any(k in lowered for k in sentiment_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Sentiment analysis keyword matched heuristic.",
+                sub_intent="market_analysis",
+                confidence=0.91,
+            ), "sentiment_keyword")
+
+        # Calculation/Math queries
+        calculation_keywords = {
+            "sharpe", "beta", "volatility", "var", "value at risk", "drawdown",
+            "correlation", "covariance", "standard deviation", "calculate",
+            "computation", "formula", "ratio", "metric", "risk metric",
+            "portfolio optimization", "rebalance", "allocation", "optimize"
+        }
+        
+        if any(k in lowered for k in calculation_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "calculation",
+                "Calculation/math keyword matched heuristic.",
+                sub_intent="portfolio_calculation",
+                confidence=0.94,
+            ), "calculation_keyword")
 
         if any(k in lowered for k in technical_keywords):
             return _log_heuristic(self._default_routing_decision(
@@ -353,6 +496,24 @@ class CoordinatorAgent(BaseAgent):
                 "Risk metric keyword matched heuristic.",
                 confidence=0.97,
             ), "risk_keyword")
+
+        # Crypto direct routing — zero LLM cost
+        if any(k in lowered for k in crypto_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Crypto asset keyword matched heuristic.",
+                sub_intent="market_analysis",
+                confidence=0.96,
+            ), "crypto_keyword")
+
+        # Macro/Yields direct routing — zero LLM cost
+        if any(k in lowered for k in macro_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Macro/Yields keyword matched heuristic.",
+                sub_intent="market_analysis",
+                confidence=0.95,
+            ), "macro_keyword")
 
         if self._is_direct_history_query(lowered):
             return _log_heuristic(self._normalize_history_route(self._default_routing_decision(
@@ -479,8 +640,7 @@ class CoordinatorAgent(BaseAgent):
         word_count = len(text.strip().split())
         confidence = float(parsed.get("confidence") or 0.0)
         return (
-            word_count <= 4
-            or confidence < 0.75
+            confidence < 0.60
             or bool(parsed.get("is_follow_up"))
             or bool(parsed.get("is_history_query"))
             or (
@@ -551,6 +711,25 @@ class CoordinatorAgent(BaseAgent):
         conv_id = conversation_id or f"conv-{uuid4().hex[:8]}"
         logger.info(f"[Coordinator] Handling session {conv_id}: {text[:50]}...")
         start_time = time.monotonic()
+        logger.info(f"[TIMING] Request received | conv_id={conv_id}")
+
+        # 0. Early domain validation - reject out-of-domain queries immediately
+        lowered_text = text.strip().lower()
+        if self._is_out_of_domain(lowered_text):
+            latency_ms = (time.monotonic() - start_time) * 1000
+            logger.info(
+                "[Coordinator] Out-of-domain query rejected early | conv_id=%s latency_ms=%.1f text=%s",
+                conv_id,
+                latency_ms,
+                text[:100],
+            )
+            return self.build_message_response(
+                reply="Yeh prashn humare domain se bahar hai. Hum financial markets, jaise ki stocks, bonds, FX, aur commodities se related jaankari aur analysis provide karte hain. Humare paas mythological, personal, ya general knowledge ke questions ka answer dene ke liye tools ya data nahi hai.",
+                bullets=[],
+                conversation_id=conv_id,
+                model_info=self.get_model_info(model_override="domain-guard"),
+                latency_ms=latency_ms,
+            )
 
         # 1. Routing phase
         context = context or {}
@@ -577,6 +756,9 @@ class CoordinatorAgent(BaseAgent):
             conversation_id=conv_id,
             username=context.get("username"),
         )
+        routing_elapsed = time.monotonic() - start_time
+        logger.info(f"[TIMING] Routing completed | elapsed={routing_elapsed:.3f}s | agent={routing.get('intent')}")
+        
         agent_id = routing.get("intent") or "greeting"
         context["routing"] = routing
         logger.info(
@@ -591,12 +773,19 @@ class CoordinatorAgent(BaseAgent):
 
         target_agent = registry.get_agent(agent_id or "greeting")
         if target_agent:
+            agent_start = time.monotonic()
+            logger.info(f"[TIMING] Delegating to {agent_id} agent | conv_id={conv_id}")
+            
             response = await target_agent.handle_message(
                 text=text,
                 conversation_id=conv_id,
                 context=context,
                 tool_callback=tool_callback,
             )
+            
+            agent_elapsed = time.monotonic() - agent_start
+            logger.info(f"[TIMING] Agent {agent_id} completed | elapsed={agent_elapsed:.3f}s")
+            
             # Inject latency into the final response
             response.latency_ms = (time.monotonic() - start_time) * 1000
             return response
@@ -680,6 +869,7 @@ class CoordinatorAgent(BaseAgent):
 
         # --- Secondary Path: Fast LLM intent routing ---
         # Use the dedicated router model first, then escalate ambiguous continuity checks.
+        # Phase 4 Optimization: Skip Pro escalation for high-confidence results
         try:
             parsed = await self._classify_route(
                 text=text,
@@ -688,12 +878,35 @@ class CoordinatorAgent(BaseAgent):
                 model_name=settings.VERTEX_AI_ROUTER_MODEL_NAME,
             )
 
-            if self._should_escalate_route_check(text, parsed):
+            # Phase 4: Check if we can skip Pro escalation
+            confidence = float(parsed.get("confidence") or 0.0)
+            is_follow_up = bool(parsed.get("is_follow_up"))
+            
+            # Skip Pro if high confidence and not a follow-up
+            if confidence > 0.85 and not is_follow_up:
+                logger.info(
+                    "[Coordinator] High-confidence Flash result, skipping Pro escalation | confidence=%.2f intent=%s",
+                    confidence,
+                    parsed.get("intent")
+                )
+                # Continue with Flash result
+            elif self._should_escalate_route_check(text, parsed):
+                # Only escalate for ambiguous cases
+                logger.info(
+                    "[Coordinator] Escalating to Pro model | confidence=%.2f is_follow_up=%s",
+                    confidence,
+                    is_follow_up
+                )
                 parsed = await self._classify_route(
                     text=text,
                     conversation_id=conversation_id,
                     username=username,
                     model_name=settings.VERTEX_AI_REASONING_MODEL_NAME,
+                )
+            else:
+                logger.info(
+                    "[Coordinator] Using Flash result without escalation | confidence=%.2f",
+                    confidence
                 )
 
             intent = parsed.get("intent") or "greeting"

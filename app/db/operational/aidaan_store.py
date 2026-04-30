@@ -22,7 +22,13 @@ class AidaanStoreRepository:
     def _new_id(self) -> str:
         return str(uuid4())
 
-    def get_recent_messages(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_messages(self, session: Session, conversation_id: str, limit: int = None) -> List[Dict[str, Any]]:
+        """
+        Get recent messages for a conversation.
+        Limit defaults to AIDAAN_HISTORY_WINDOW from settings (configurable).
+        """
+        if limit is None:
+            limit = settings.AIDAAN_HISTORY_WINDOW
         rows = fetch_all(
             session,
             schema=self.schema,
@@ -35,7 +41,13 @@ class AidaanStoreRepository:
         rows.reverse()
         return rows
 
-    def get_recent_rfq_drafts(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_rfq_drafts(self, session: Session, conversation_id: str, limit: int = None) -> List[Dict[str, Any]]:
+        """
+        Get recent RFQ drafts for a conversation.
+        Limit defaults to AIDAAN_MAX_RFQ_DRAFTS from settings (configurable).
+        """
+        if limit is None:
+            limit = settings.AIDAAN_MAX_RFQ_DRAFTS
         return fetch_all(
             session,
             schema=self.schema,
@@ -46,7 +58,13 @@ class AidaanStoreRepository:
             limit=limit,
         )
 
-    def get_recent_tool_invocations(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_tool_invocations(self, session: Session, conversation_id: str, limit: int = None) -> List[Dict[str, Any]]:
+        """
+        Get recent tool invocations for a conversation.
+        Limit defaults to AIDAAN_MAX_TOOL_INVOCATIONS from settings (configurable).
+        """
+        if limit is None:
+            limit = settings.AIDAAN_MAX_TOOL_INVOCATIONS
         return fetch_all(
             session,
             schema=self.schema,
@@ -57,7 +75,13 @@ class AidaanStoreRepository:
             limit=limit,
         )
 
-    def get_recent_audit_events(self, session: Session, conversation_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_audit_events(self, session: Session, conversation_id: str, limit: int = None) -> List[Dict[str, Any]]:
+        """
+        Get recent audit events for a conversation.
+        Limit defaults to AIDAAN_MAX_AUDIT_EVENTS from settings (configurable).
+        """
+        if limit is None:
+            limit = settings.AIDAAN_MAX_AUDIT_EVENTS
         return fetch_all(
             session,
             schema=self.schema,

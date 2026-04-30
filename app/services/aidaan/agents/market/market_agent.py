@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from app.core.config.settings import settings
@@ -60,9 +61,22 @@ class MarketAgent(BaseAgent):
 
         plan = {
             "tool_mode": "full",
-            "model_name": settings.VERTEX_AI_REASONING_MODEL_NAME,
+            "model_name": settings.VERTEX_AI_MODEL_NAME,
             "fast_path_kind": None,
         }
+
+        # Only use Pro for truly complex multi-step reasoning
+        HEAVY_REASONING_PATTERNS = [
+            r"\bdcf\b", r"\bwacc\b", r"\bblack.?swan\b", r"\bvar\b.*\bscenario\b",
+            r"\bcorrelation.?matrix\b", r"\bdelta.?neutral\b", r"\bsensitivity.?matrix\b",
+            r"\bstress.?test\b", r"\barbitrage.?simulation\b",
+        ]
+        needs_heavy_reasoning = any(
+            re.search(p, normalized_text) for p in HEAVY_REASONING_PATTERNS
+        )
+
+        if needs_heavy_reasoning:
+            plan["model_name"] = settings.VERTEX_AI_REASONING_MODEL_NAME
 
         if control_signal == "stop":
             plan.update({
@@ -116,9 +130,10 @@ class MarketAgent(BaseAgent):
             + " Resolve the correct ticker, market, index, company, or concept from the user's wording before using tools."
             + " \nCRITICAL RULES FOR DATA/A2A:\n"
             + " 1. EXACT NUMBERS: If the user asks for exact stock prices/dates, MUST use Alpha Vantage exact data.\n"
-            + " 2. AGENT-TO-AGENT (A2A) COLLABORATION: Before providing trading advice, order staging, or confirming a position size, you MUST internally consult the 'risk' agent using your `consult_specialist_agent` tool. This ensures desk limits are securely verified within the Privacy Vault.\n"
-            + " 3. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
-            + " 4. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity."
+            + " 2. TICKER VALIDATION: If search_ticker returns no matches or an error, you MUST inform the user that the ticker/company was not found. NEVER substitute a different company or use a 'sector representative'. Be honest about data availability.\n"
+            + " 3. AGENT-TO-AGENT (A2A) COLLABORATION: Before providing trading advice, order staging, or confirming a position size, you MUST internally consult the 'risk' agent using your `consult_specialist_agent` tool. This ensures desk limits are securely verified within the Privacy Vault.\n"
+            + " 4. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
+            + " 5. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity."
         )
 
         if sub_intent == "education":
@@ -178,6 +193,7 @@ class MarketAgent(BaseAgent):
         - synthesizing the final trader-facing answer
         """
         logger.info("[MarketAgent] Analyzing market query via Vertex-first orchestration: %s", text)
+        market_start = time.monotonic()
         context = context or {}
         routing = context.get("routing") or {}
         sub_intent = routing.get("sub_intent", "general")
@@ -208,6 +224,9 @@ class MarketAgent(BaseAgent):
             tool_mode,
             fast_path_kind,
         )
+        
+        llm_start = time.monotonic()
+        logger.info(f"[TIMING] Starting LLM orchestration | model={model_name} | tool_mode={tool_mode}")
 
         try:
             response_data = await self.generate_json_response(
@@ -220,6 +239,10 @@ class MarketAgent(BaseAgent):
                 response_schema=Prompts.STANDARD_RESPONSE_SCHEMA,
                 system_instruction=self._build_market_system_instruction(sub_intent, control_signal),
             )
+            
+            llm_elapsed = time.monotonic() - llm_start
+            logger.info(f"[TIMING] LLM orchestration completed | elapsed={llm_elapsed:.3f}s")
+            
             logger.info(
                 "[MarketAgent] Response generated | format=%s bullets=%s reply_preview=%s",
                 response_data.get("format"),

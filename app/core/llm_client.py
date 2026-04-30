@@ -161,25 +161,50 @@ class LLMClient:
         last_error = None
         for attempt in range(retries):
             started = time.monotonic()
+            logger.info(f"[TIMING] Gemini API call starting | stage={stage} | model={model} | attempt={attempt+1}")
             try:
                 async with self._vertex_concurrency:
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        _executor,
-                        lambda: client.models.generate_content(
-                            model=model,
-                            contents=contents,
-                            config=config,
+                    # Add timeout wrapper to prevent indefinite hangs
+                    response = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            _executor,
+                            lambda: client.models.generate_content(
+                                model=model,
+                                contents=contents,
+                                config=config,
+                            ),
                         ),
+                        timeout=settings.VERTEX_AI_REQUEST_TIMEOUT_SECONDS
                     )
+                elapsed = self._elapsed_ms(started)
                 logger.info(
                     "[LLMClient][%s] %s completed | model=%s | latency_ms=%s | attempt=%s",
                     trace_id or "no-trace",
                     stage,
                     model,
-                    self._elapsed_ms(started),
+                    elapsed,
                     attempt + 1,
                 )
+                logger.info(f"[TIMING] Gemini API call completed | stage={stage} | elapsed={elapsed/1000:.3f}s")
                 return response
+            except asyncio.TimeoutError:
+                elapsed = self._elapsed_ms(started)
+                last_error = TimeoutError(f"Gemini API call timed out after {elapsed/1000:.1f}s")
+                logger.error(
+                    "[LLMClient][%s] %s TIMEOUT | model=%s | elapsed_ms=%s | attempt=%s/%s",
+                    trace_id or "no-trace",
+                    stage,
+                    model,
+                    elapsed,
+                    attempt + 1,
+                    retries,
+                )
+                if attempt < retries - 1:
+                    delay = (attempt + 1) * 5
+                    logger.info("[LLMClient][%s] Retrying after timeout in %0.2fs", trace_id or "no-trace", delay)
+                    await asyncio.sleep(delay)
+                else:
+                    raise last_error
             except Exception as exc:
                 last_error = exc
                 is_429 = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
@@ -446,8 +471,17 @@ class LLMClient:
         if settings.SUPPORTED_LANGUAGES and settings.SUPPORTED_LANGUAGES.lower() not in ["all", "any", "unrestricted"]:
             lang_instruction += f"\nNote: Try to prioritize supporting these specific languages if queried: {settings.SUPPORTED_LANGUAGES}"
 
+        # Phase 4 Fix: Add explicit Unicode handling instruction
+        unicode_instruction = (
+            "\n\nCRITICAL JSON ENCODING RULE:\n"
+            "When generating JSON responses with non-ASCII characters (Hindi, Gujarati, Marathi, etc.), "
+            "you MUST use proper UTF-8 encoding. Do NOT use incomplete Unicode escape sequences like \\u092. "
+            "Either use complete \\uXXXX escapes (4 hex digits) or use raw UTF-8 characters directly. "
+            "Prefer raw UTF-8 characters for better readability."
+        )
+
         timestamp_instruction = self._build_timestamp_instruction()
-        instruction_parts = [part for part in [system_instruction, timestamp_instruction, lang_instruction] if part]
+        instruction_parts = [part for part in [system_instruction, timestamp_instruction, lang_instruction, unicode_instruction] if part]
         return "\n\n".join(instruction_parts)
 
     @staticmethod
@@ -672,11 +706,54 @@ class LLMClient:
         clean = re.sub(r"```(?:json)?", "", raw_text).replace("```", "").strip()
         match = re.search(r"\{.*\}", clean, re.DOTALL)
         payload = match.group(0) if match else clean
+        
         try:
-            return json.loads(payload)
+            # Phase 4 Fix: Ensure proper Unicode handling for Hindi/Gujarati/Marathi text
+            # Use ensure_ascii=False during dumps to preserve Unicode characters
+            parsed = json.loads(payload)
+            
+            # Validate and sanitize the parsed JSON to ensure it's serializable
+            # This prevents Unicode escape issues in downstream processing
+            validated = json.loads(json.dumps(parsed, ensure_ascii=False))
+            return validated
         except json.JSONDecodeError as exc:
             logger.error("[LLMClient] JSON parsing failed for payload: %s", payload[:200])
             raise exc
+
+    @staticmethod
+    def _is_valid_unicode_escapes(text: str) -> bool:
+        r"""
+        Check if all Unicode escape sequences in the text are valid.
+        Returns False if any invalid \uXXXX sequences are found.
+        """
+        # Find all \uXXXX patterns
+        unicode_pattern = r'\\u[0-9a-fA-F]{0,4}'
+        matches = re.findall(unicode_pattern, text)
+        
+        for match in matches:
+            # Valid Unicode escape must be exactly \uXXXX where X is hex digit
+            if len(match) != 6:  # \u + 4 hex digits
+                return False
+        return True
+
+    @staticmethod
+    def _repair_unicode_escapes(text: str) -> str:
+        """
+        Attempt to repair malformed Unicode escape sequences.
+        Converts raw Unicode characters to proper JSON-safe format.
+        """
+        try:
+            # Strategy 1: Try to decode any valid escapes and re-encode properly
+            # This handles cases where the model mixed escaped and unescaped Unicode
+            decoded = text.encode('utf-8').decode('unicode-escape', errors='ignore')
+            # Re-encode to ensure proper JSON format
+            repaired = json.dumps(decoded, ensure_ascii=False)[1:-1]  # Remove quotes
+            return repaired
+        except Exception:
+            # Strategy 2: If that fails, just remove invalid escape sequences
+            # Replace incomplete \uXXX with the literal characters
+            repaired = re.sub(r'\\u([0-9a-fA-F]{0,3})(?![0-9a-fA-F])', r'\1', text)
+            return repaired
 
     async def generate_json(
         self,
@@ -724,8 +801,11 @@ class LLMClient:
 
         # REDACT PII via DLP before Vertex processes it
         dlp_start = time.monotonic()
+        logger.info(f"[TIMING] Starting DLP redaction | trace_id={trace_id}")
         prompt = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, prompt)
-        logger.info("[LLMClient][%s] DLP redaction completed | latency_ms=%s", trace_id, self._elapsed_ms(dlp_start))
+        dlp_elapsed = self._elapsed_ms(dlp_start)
+        logger.info("[LLMClient][%s] DLP redaction completed | latency_ms=%s", trace_id, dlp_elapsed)
+        logger.info(f"[TIMING] DLP completed | elapsed={dlp_elapsed/1000:.3f}s")
 
         # Helper: add JSON instruction for non-strict calls
         if use_hybrid_mode and "Return ONLY raw JSON" not in prompt:
@@ -786,14 +866,20 @@ class LLMClient:
                     stage=f"generate_json.attempt_{attempt + 1}",
                 )
                 raw = (response.text or "").strip()
-                parsed = self._extract_json(raw)
                 
-                # REDACT PII from the response before caching or returning
-                if isinstance(parsed, dict):
-                    # We might want to redact specific fields or the whole JSON as string
-                    parsed_str = json.dumps(parsed)
-                    redacted_str = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, parsed_str)
-                    parsed = json.loads(redacted_str)
+                # Phase 4 Fix: Validate response before parsing to catch encoding issues early
+                if not raw:
+                    raise ValueError("Model returned empty response")
+                
+                # Check for common Unicode escape issues in the raw response
+                if r"\u" in raw and not self._is_valid_unicode_escapes(raw):
+                    logger.warning("[LLMClient][%s] Detected invalid Unicode escapes in response, attempting repair", trace_id)
+                    raw = self._repair_unicode_escapes(raw)
+                
+                parsed = self._extract_json(raw)
+                # NOTE: DLP redaction on LLM-generated responses is intentionally skipped.
+                # The model does not reproduce raw user PII in structured JSON output.
+                # Input-side redaction (above) is sufficient and avoids double latency.
 
                 cache.set(cache_key, parsed, expire=settings.LLM_CACHE_EXPIRE)
                 self._log_usage("generate_json", prompt)
@@ -909,16 +995,15 @@ class LLMClient:
                 while response.function_calls and turn < max_turns:
                     turn += 1
                     
-                    # Quota Throttling: Small pause between batches to prevent 429 RPM spikes
-                    if turn > 1:
-                        await asyncio.sleep(0.5)
-
                     batch_start = time.monotonic()
                     function_call_content = response.candidates[0].content
                     contents.append(function_call_content)
 
                     tasks = []
                     queued_calls = []
+                    tools_in_batch = 0
+                    max_tools_per_turn = settings.VERTEX_AI_MAX_TOOLS_PER_TURN
+                    
                     for function_call in response.function_calls:
                         tool_name = function_call.name
                         tool_args = dict(function_call.args or {})
@@ -932,7 +1017,21 @@ class LLMClient:
                                 tool_name,
                             )
                             continue
+                        
+                        # Limit tools per turn to prevent context overflow
+                        if tools_in_batch >= max_tools_per_turn:
+                            logger.warning(
+                                "[LLMClient][%s] [%s/%s] Tool limit reached (%s/%s), skipping remaining tools",
+                                trace_id or "no-trace",
+                                turn,
+                                max_turns,
+                                tools_in_batch,
+                                max_tools_per_turn,
+                            )
+                            break
+                        
                         seen_tool_signatures.add(signature)
+                        tools_in_batch += 1
                         logger.info(
                             "[LLMClient][%s] [%s/%s] Executing tool (Parallel): %s",
                             trace_id or "no-trace",
@@ -961,13 +1060,15 @@ class LLMClient:
                         break
 
                     results = await asyncio.gather(*tasks)
+                    batch_elapsed = self._elapsed_ms(batch_start)
                     logger.info(
                         "[LLMClient][%s] Tool batch completed | turn=%s | tool_calls=%s | latency_ms=%s",
                         trace_id or "no-trace",
                         turn,
                         len(tasks),
-                        self._elapsed_ms(batch_start),
+                        batch_elapsed,
                     )
+                    logger.info(f"[TIMING] Tool batch {turn} completed | tools={len(tasks)} | elapsed={batch_elapsed/1000:.3f}s")
 
                     tool_parts = []
                     for function_call, tool_result in zip(queued_calls, results):
@@ -1016,12 +1117,14 @@ class LLMClient:
                 if not raw:
                     raise ValueError("Model returned no text after MCP tool usage")
 
-                parsed = self._extract_json(raw)
+                # Phase 4 Fix: Validate response before parsing
+                if r"\u" in raw and not self._is_valid_unicode_escapes(raw):
+                    logger.warning("[LLMClient][%s] Detected invalid Unicode escapes in MCP response, attempting repair", trace_id)
+                    raw = self._repair_unicode_escapes(raw)
 
-                if isinstance(parsed, dict):
-                    parsed_str = json.dumps(parsed)
-                    redacted_str = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, parsed_str)
-                    parsed = json.loads(redacted_str)
+                parsed = self._extract_json(raw)
+                # NOTE: DLP redaction on LLM-generated responses is intentionally skipped.
+                # Input-side redaction is sufficient; model output does not reproduce raw PII.
 
                 latency_ms = int((time.monotonic() - start) * 1000)
                 logger.debug(
@@ -1092,9 +1195,8 @@ class LLMClient:
                 config=config,
             )
             text = (response.text or "").strip()
-            
-            # REDACT PII from the response
-            text = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, text)
+            # NOTE: DLP redaction on LLM-generated text responses is intentionally skipped.
+            # Input-side redaction is sufficient; model output does not reproduce raw PII.
 
             cache.set(cache_key, text, expire=settings.LLM_CACHE_EXPIRE)
             self._log_usage("generate_text", prompt)

@@ -60,9 +60,13 @@ class OperationalAgent(BaseAgent):
             ]
         )
 
-    def _extract_history_facts(self, conversation_id: str) -> Dict[str, Any]:
+    def _extract_history_facts(self, conversation_id: str, max_substantive: int = 2) -> Dict[str, Any]:
         """
         Build a compact deterministic history summary from persisted memory.
+        
+        Args:
+            conversation_id: The conversation to extract facts from
+            max_substantive: Maximum number of substantive user messages to extract (default 2)
         """
         history = runtime_context_service.get_recent_history(conversation_id)
         continuity = runtime_context_service.build_continuity_guidance(history)
@@ -83,30 +87,38 @@ class OperationalAgent(BaseAgent):
             if not self._is_control_like_message(message) and not self._is_substantive_control_turn(message)
         ]
 
+        # Extract up to max_substantive messages
         facts = {
             "history_count": len(history),
             "last_user_message": user_messages[-1] if user_messages else "",
-            "last_substantive_user_message": substantive_user_messages[-1] if substantive_user_messages else "",
-            "previous_substantive_user_message": substantive_user_messages[-2] if len(substantive_user_messages) >= 2 else "",
+            "substantive_user_messages": substantive_user_messages[-max_substantive:] if substantive_user_messages else [],
             "last_assistant_message": assistant_messages[-1] if assistant_messages else "",
             "pending_follow_up": bool(continuity.get("pending_follow_up")),
             "last_follow_up_prompt": self._clean_message_text(continuity.get("last_follow_up_prompt")),
         }
         logger.info(
-            "[OperationalAgent] History facts extracted | history_count=%s user_messages=%s assistant_messages=%s pending_follow_up=%s",
+            "[OperationalAgent] History facts extracted | history_count=%s user_messages=%s assistant_messages=%s substantive_count=%s pending_follow_up=%s",
             facts["history_count"],
             len(user_messages),
             len(assistant_messages),
+            len(facts["substantive_user_messages"]),
             facts["pending_follow_up"],
         )
         return facts
 
-    def _build_history_response(self, *, conversation_id: str) -> AidaanMessageResponse:
+    def _build_history_response(self, *, conversation_id: str, requested_count: int = 2) -> AidaanMessageResponse:
         """
         Return a strict no-tool conversation-memory summary.
+        
+        Args:
+            conversation_id: The conversation to summarize
+            requested_count: Number of substantive conversations to return (default 2)
         """
-        logger.info("[OperationalAgent] History fast path engaged | conversation_id=%s", conversation_id)
-        facts = self._extract_history_facts(conversation_id)
+        logger.info("[OperationalAgent] History fast path engaged | conversation_id=%s requested_count=%s", conversation_id, requested_count)
+        
+        # Optimization: Use get_recent_history instead of get_conversation_bundle
+        # This avoids fetching RFQ drafts, tool invocations, and audit events
+        facts = self._extract_history_facts(conversation_id, max_substantive=requested_count)
 
         if facts["history_count"] == 0:
             reply = (
@@ -115,22 +127,34 @@ class OperationalAgent(BaseAgent):
             )
             bullets = ["No persisted history found"]
         else:
-            primary_ask = facts["last_substantive_user_message"] or facts["last_user_message"] or "No prior user ask found."
-            previous_ask = facts["previous_substantive_user_message"]
+            substantive_messages = facts["substantive_user_messages"]
             last_assistant = facts["last_assistant_message"] or "No prior assistant reply found."
 
-            detail_lines = [f'Your most recent substantive query was: "{primary_ask}"']
-            if previous_ask:
-                detail_lines.append(f'An earlier substantive query was: "{previous_ask}"')
+            if not substantive_messages:
+                primary_ask = facts["last_user_message"] or "No prior user ask found."
+                detail_lines = [f'Your most recent query was: "{primary_ask}"']
+            else:
+                # Build detail lines for all substantive messages (most recent first in display)
+                detail_lines = []
+                for idx, msg in enumerate(reversed(substantive_messages)):
+                    if idx == 0:
+                        detail_lines.append(f'Your most recent substantive query was: "{msg}"')
+                    else:
+                        detail_lines.append(f'An earlier substantive query was: "{msg}"')
+            
             detail_lines.append(f'My most recent reply was about: "{last_assistant[:220]}"')
             if facts["pending_follow_up"] and facts["last_follow_up_prompt"]:
                 detail_lines.append(f'Pending follow-up: "{facts["last_follow_up_prompt"]}"')
 
             reply = "[Direct Answer]\n" + detail_lines[0] + "\n\n[Context Detail]\n" + "\n".join(detail_lines[1:])
 
-            bullets = [f'Last substantive ask: "{primary_ask}"']
-            if previous_ask:
-                bullets.append(f'Previous ask: "{previous_ask}"')
+            bullets = []
+            for idx, msg in enumerate(reversed(substantive_messages)):
+                if idx == 0:
+                    bullets.append(f'Last substantive ask: "{msg}"')
+                else:
+                    bullets.append(f'Earlier ask #{idx+1}: "{msg}"')
+            
             if facts["pending_follow_up"] and facts["last_follow_up_prompt"]:
                 bullets.append(f'Pending follow-up: "{facts["last_follow_up_prompt"]}"')
             else:
@@ -262,7 +286,19 @@ class OperationalAgent(BaseAgent):
         )
 
         if sub_intent == "history_lookup":
-            return self._build_history_response(conversation_id=conversation_id)
+            # Extract requested count from text if present
+            requested_count = 2  # default
+            import re
+            count_match = re.search(r'\b(\d+)\b', text.lower())
+            if count_match:
+                try:
+                    requested_count = int(count_match.group(1))
+                    # Cap at reasonable limit
+                    requested_count = min(requested_count, 10)
+                    logger.info("[OperationalAgent] Detected requested conversation count: %s", requested_count)
+                except ValueError:
+                    pass
+            return self._build_history_response(conversation_id=conversation_id, requested_count=requested_count)
         if sub_intent == "conversation_logic":
             return await self._build_conversation_logic_response(
                 text=text,

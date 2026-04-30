@@ -7,6 +7,7 @@ import logging
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config.settings import settings
@@ -23,14 +24,13 @@ if db_config.url.startswith("sqlite:"):
 elif db_config.url.startswith("postgresql"):
     connect_args = {
         "connect_timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
+        "sslmode": settings.ALLOYDB_SSL_MODE,
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 5,
-        "options": (
-            f"-c statement_timeout={settings.DB_STATEMENT_TIMEOUT_MS} "
-            f"-c idle_in_transaction_session_timeout={settings.DB_STATEMENT_TIMEOUT_MS * 2}"
-        ),
+        # NOTE: Cloud SQL Proxy does not support statement_timeout in options parameter.
+        # Use SET commands after connection instead if needed.
     }
 
 engine_kwargs = {
@@ -40,16 +40,18 @@ engine_kwargs = {
     "connect_args": connect_args,
 }
 
-if db_config.url.startswith("postgresql"):
+if db_config.url.startswith("postgresql") and settings.DB_POOL_ENABLED:
     engine_kwargs.update(
         {
             "pool_size": settings.DB_POOL_SIZE,
             "max_overflow": settings.DB_MAX_OVERFLOW,
             "pool_timeout": settings.DB_POOL_TIMEOUT,
-            "pool_recycle": 60,  # Reduced to 60s to aggressively prevent stale SSL sessions
-            "pool_use_lifo": True, # Prefer recently used connections
+            "pool_recycle": settings.DB_POOL_RECYCLE_SECONDS,
+            "pool_use_lifo": True,  # Prefer recently used connections.
         }
     )
+elif db_config.url.startswith("postgresql"):
+    engine_kwargs["poolclass"] = NullPool
 
 engine = create_engine(db_config.url, **engine_kwargs)
 
@@ -58,12 +60,23 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 def warm_database_pool() -> None:
     """
-    Open and return one connection to the pool during startup.
-    This moves first-connect latency away from the first user message.
+    Pre-warm multiple connections in the pool during startup.
+    This moves first-connect latency away from the first user messages.
+    Opens 5 connections to ensure pool is ready for concurrent requests.
     """
-    with engine.connect() as connection:
-        connection.execute(text("SELECT 1"))
-    logger.info("[Database] Connection pool warmed.")
+    connections = []
+    try:
+        # Open 5 connections to pre-warm the pool
+        for i in range(5):
+            conn = engine.connect()
+            conn.execute(text("SELECT 1"))
+            connections.append(conn)
+        
+        logger.info("[Database] Connection pool warmed with 5 connections.")
+    finally:
+        # Close all connections to return them to the pool
+        for conn in connections:
+            conn.close()
 
 
 @contextmanager

@@ -70,25 +70,22 @@ async def search_ticker(keywords: str) -> Dict[str, Any]:
     })
 
     if "error" in data:
-        # Fallback to simulation if rate limited
-        if (
-            "rate limit" in data["error"].lower()
-            or "not configured" in data["error"].lower()
-        ):
-            return {
-                "matches": [
-                    {
-                        "symbol": keywords.upper(),
-                        "name": f"{keywords.upper()} Corp (Simulated)",
-                        "type": "Equity",
-                        "region": "United States"
-                    }
-                ],
-                "note": "SIMULATION MODE ACTIVE"
-            }
-        return data
+        # Return the actual error - do NOT simulate fake tickers
+        return {
+            "error": data["error"],
+            "matches": [],
+            "message": f"Unable to search for ticker '{keywords}'. Please verify the company name or ticker symbol."
+        }
     
     matches = data.get("bestMatches", [])
+    
+    # If no matches found, be explicit about it
+    if not matches:
+        return {
+            "matches": [],
+            "message": f"No ticker found for '{keywords}'. Please verify the company name or ticker symbol is correct."
+        }
+    
     return {
         "matches": [
             {
@@ -548,7 +545,14 @@ async def get_crypto_daily_series(
 ) -> Dict[str, Any]:
     """
     Crypto daily OHLCV (Digital Currency Daily). Returns latest `days` rows.
+    Accepts symbol as "BTC" or "BTC/USD" — the slash format is auto-split.
     """
+    # Normalize "BTC/USD" → symbol="BTC", market="USD"
+    if "/" in symbol:
+        parts = symbol.split("/", 1)
+        symbol = parts[0].strip()
+        market = parts[1].strip() if len(parts) > 1 else market
+
     raw = await _fetch_av(
         {
             "function": "DIGITAL_CURRENCY_DAILY",
@@ -647,14 +651,28 @@ async def get_market_news(
 ) -> Dict[str, Any]:
     """
     Get real-time market news and sentiment.
-    Tickers can be comma-separated.
+    Tickers can be comma-separated. For crypto use prefix CRYPTO: e.g. "CRYPTO:BTC".
+    For FX use prefix FOREX: e.g. "FOREX:USD".
     """
     params = {
         "function": "NEWS_SENTIMENT",
         "limit": 10
     }
-    if tickers: params["tickers"] = tickers
-    if topics: params["topics"] = topics
+    # Alpha Vantage requires CRYPTO:BTC format for crypto news tickers.
+    # Auto-prefix bare crypto symbols so the model doesn't need to know this detail.
+    if tickers:
+        _KNOWN_CRYPTO = {"BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "DOGE", "AVAX", "DOT", "MATIC"}
+        normalized_tickers = []
+        for t in tickers.split(","):
+            t = t.strip()
+            base = t.split("/")[0].upper() if "/" in t else t.upper()
+            if base in _KNOWN_CRYPTO and not t.upper().startswith("CRYPTO:"):
+                normalized_tickers.append(f"CRYPTO:{base}")
+            else:
+                normalized_tickers.append(t)
+        params["tickers"] = ",".join(normalized_tickers)
+    if topics:
+        params["topics"] = topics
     
     # Fetch data
     raw_data = await _fetch_av(params)

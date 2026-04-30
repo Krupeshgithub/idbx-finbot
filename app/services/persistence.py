@@ -34,6 +34,9 @@ class PersistenceService:
                 channel=channel,
                 context=context,
             )
+            # Invalidate session context cache so the next turn reads fresh history from DB.
+            from app.services.aidaan.runtime_context import runtime_context_service
+            runtime_context_service.invalidate_session_cache(conversation_id, username)
         except Exception as exc:
             logger.warning(
                 "[Persistence] Message exchange persistence failed; response already delivered | conversation_id=%s channel=%s error=%s",

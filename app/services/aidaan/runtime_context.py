@@ -4,9 +4,13 @@ Runtime context and memory assembly for AIDAAN agents.
 from __future__ import annotations
 
 import json
+import logging
 import re
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 import contextvars
+
+logger = logging.getLogger(__name__)
 
 # Context variables for Secure A2A session propagation (Zero Leakage)
 current_conversation_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_conversation_id", default="")
@@ -23,6 +27,50 @@ def _clean_text(value: Any) -> str:
     if not value:
         return ""
     return str(value).strip()
+
+
+# ---------------------------------------------------------------------------
+# In-process session-level context cache
+# Avoids repeated DB hits for the same conversation within a short window.
+# TTL: 5 minutes — long enough to cover multi-turn conversations,
+# short enough to stay reasonably fresh.
+# ---------------------------------------------------------------------------
+_SESSION_CACHE_TTL_SECONDS: float = 300.0  # 5 minutes (was 30 seconds)
+
+class _SessionContextCache:
+    """
+    Lightweight in-memory TTL cache keyed by (conversation_id, username).
+    Thread-safe for asyncio single-threaded event loop usage.
+    """
+    def __init__(self) -> None:
+        # key → (payload, expiry_monotonic)
+        self._store: Dict[str, Tuple[Any, float]] = {}
+
+    def _key(self, conversation_id: Optional[str], username: Optional[str]) -> str:
+        return f"{conversation_id or ''}::{username or ''}"
+
+    def get(self, conversation_id: Optional[str], username: Optional[str]) -> Optional[Any]:
+        k = self._key(conversation_id, username)
+        entry = self._store.get(k)
+        if entry is None:
+            return None
+        payload, expiry = entry
+        if time.monotonic() > expiry:
+            del self._store[k]
+            return None
+        return payload
+
+    def set(self, conversation_id: Optional[str], username: Optional[str], payload: Any) -> None:
+        k = self._key(conversation_id, username)
+        self._store[k] = (payload, time.monotonic() + _SESSION_CACHE_TTL_SECONDS)
+
+    def invalidate(self, conversation_id: Optional[str], username: Optional[str] = None) -> None:
+        """Call this after a new message is persisted to force a fresh DB read."""
+        k = self._key(conversation_id, username)
+        self._store.pop(k, None)
+
+
+_session_ctx_cache = _SessionContextCache()
 
 
 class RuntimeContextService:
@@ -157,17 +205,30 @@ class RuntimeContextService:
         if len(base_prompt.strip().split()) <= 2 and not is_history_query:
             return base_prompt
 
-        history = self.get_recent_history(conversation_id)
-        operational = self.get_operational_context(
-            username=username,
-            conversation_id=conversation_id,
-        )
-        if not history and not any(operational.values()):
-            return base_prompt
+        # --- Session-level cache: avoid repeated DB hits within the same burst ---
+        ctx_start = time.monotonic()
+        cached_ctx = _session_ctx_cache.get(conversation_id, username)
+        if cached_ctx is not None:
+            ctx_elapsed = (time.monotonic() - ctx_start) * 1000
+            logger.info(f"[TIMING] Context cache HIT | conv_id={conversation_id} | elapsed={ctx_elapsed:.1f}ms")
+            history_block, ops_block, continuity_block = cached_ctx
+        else:
+            logger.info(f"[TIMING] Context cache MISS | conv_id={conversation_id} | fetching from DB")
+            history = self.get_recent_history(conversation_id)
+            operational = self.get_operational_context(
+                username=username,
+                conversation_id=conversation_id,
+            )
+            if not history and not any(operational.values()):
+                return base_prompt
 
-        history_block = _json_dump(history)
-        ops_block = _json_dump(operational)
-        continuity_block = _json_dump(self.build_continuity_guidance(history))
+            history_block = _json_dump(history)
+            ops_block = _json_dump(operational)
+            continuity_block = _json_dump(self.build_continuity_guidance(history))
+            _session_ctx_cache.set(conversation_id, username, (history_block, ops_block, continuity_block))
+            ctx_elapsed = (time.monotonic() - ctx_start) * 1000
+            logger.info(f"[TIMING] Context built and cached | conv_id={conversation_id} | elapsed={ctx_elapsed:.1f}ms")
+
         return (
             f"{base_prompt}\n\n"
             "Server-side conversation memory below is authoritative and should be used for continuity.\n"
@@ -180,6 +241,13 @@ class RuntimeContextService:
             "Do not answer by analyzing the literal token alone when recent context makes the intended continuation clear.\n"
             "Do not mention hidden database internals unless the user explicitly asks."
         )
+
+    def invalidate_session_cache(self, conversation_id: Optional[str], username: Optional[str] = None) -> None:
+        """
+        Invalidate the session context cache for a conversation.
+        Call this after persisting a new message so the next turn gets fresh DB data.
+        """
+        _session_ctx_cache.invalidate(conversation_id, username)
 
 
 runtime_context_service = RuntimeContextService()

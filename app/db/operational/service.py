@@ -7,12 +7,14 @@ import logging
 import time
 import random
 from typing import Any, Callable, Dict, Iterable, Optional, TypeVar
+from functools import lru_cache
 
 from sqlalchemy.exc import OperationalError
 
 from app.db.operational.aidaan_store import AidaanStoreRepository
 from app.db.operational.public_read import PublicReadRepository
-from app.db.session import get_db_session
+from app.db.session import engine, get_db_session
+from app.core.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,11 @@ class OperationalDataService:
     def __init__(self) -> None:
         self.public = PublicReadRepository()
         self.aidaan = AidaanStoreRepository()
+        
+        # Phase 2 Optimization: Query result caching
+        self._cache: Dict[str, tuple[Any, float]] = {}
+        self._cache_ttl = 300  # 5 minutes for active conversations
+        self._cache_max_size = 200  # Maximum cache entries
 
     @staticmethod
     def _normalize_instrument(value: Optional[str]) -> str:
@@ -137,6 +144,77 @@ class OperationalDataService:
         jitter = delay * 0.2 * random.random()
         time.sleep(delay + jitter)
 
+    def _get_from_cache(self, cache_key: str) -> Optional[Any]:
+        """
+        Get value from cache if not expired.
+        Phase 2 Optimization: Query result caching.
+        """
+        if cache_key in self._cache:
+            cached_data, timestamp = self._cache[cache_key]
+            age = time.time() - timestamp
+            if age < self._cache_ttl:
+                logger.info(
+                    "[Cache] HIT | key=%s | age=%.1fs | ttl=%ds",
+                    cache_key,
+                    age,
+                    self._cache_ttl
+                )
+                return cached_data
+            else:
+                # Expired, remove it
+                del self._cache[cache_key]
+                logger.info(
+                    "[Cache] EXPIRED | key=%s | age=%.1fs | ttl=%ds",
+                    cache_key,
+                    age,
+                    self._cache_ttl
+                )
+        return None
+
+    def _put_in_cache(self, cache_key: str, data: Any) -> None:
+        """
+        Store value in cache with timestamp.
+        Phase 2 Optimization: Query result caching.
+        """
+        # Evict oldest entries if cache is full
+        if len(self._cache) >= self._cache_max_size:
+            # Remove 20% oldest entries
+            sorted_keys = sorted(self._cache.items(), key=lambda x: x[1][1])
+            evict_count = max(1, self._cache_max_size // 5)
+            for key, _ in sorted_keys[:evict_count]:
+                del self._cache[key]
+            logger.info(
+                "[Cache] EVICTED | count=%d | reason=max_size_reached",
+                evict_count
+            )
+        
+        self._cache[cache_key] = (data, time.time())
+        logger.info(
+            "[Cache] STORED | key=%s | cache_size=%d/%d",
+            cache_key,
+            len(self._cache),
+            self._cache_max_size
+        )
+
+    def _invalidate_cache(self, conversation_id: str) -> None:
+        """
+        Invalidate all cache entries for a conversation.
+        Phase 2 Optimization: Smart cache invalidation.
+        """
+        keys_to_remove = [
+            key for key in self._cache.keys()
+            if conversation_id in key
+        ]
+        for key in keys_to_remove:
+            del self._cache[key]
+        
+        if keys_to_remove:
+            logger.info(
+                "[Cache] INVALIDATED | conv_id=%s | keys_removed=%d",
+                conversation_id,
+                len(keys_to_remove)
+            )
+
     def _execute_with_retry(
         self,
         operation: Callable[[], T],
@@ -150,10 +228,20 @@ class OperationalDataService:
         """
         last_exc = None
         for attempt in range(max_retries):
+            db_start = time.monotonic()
             try:
-                return operation()
+                result = operation()
+                db_elapsed = (time.monotonic() - db_start) * 1000
+                logger.info(f"[TIMING] DB operation | label={label} | elapsed={db_elapsed:.1f}ms | attempt={attempt+1}")
+                return result
             except OperationalError as exc:
                 last_exc = exc
+                if getattr(exc, "connection_invalidated", False):
+                    engine.dispose()
+                    logger.warning(
+                        "[OperationalData] %s invalidated the DB connection pool after disconnect.",
+                        label,
+                    )
                 if attempt < max_retries - 1:
                     logger.warning(
                         "[OperationalData] %s hit transient DB error; retrying (%d/%d) | error=%s",
@@ -219,35 +307,70 @@ class OperationalDataService:
         if not conversation_id:
             return []
 
+        # Phase 2 Optimization: Check cache first
+        cache_key = f"history:{conversation_id}:{limit}"
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result is not None:
+            return cached_result
+
         def _fetch():
             with get_db_session() as session:
                 return self.aidaan.get_recent_messages(session, conversation_id, limit=limit)
 
-        return self._execute_with_retry(
+        result = self._execute_with_retry(
             _fetch,
             label=f"Recent history lookup ({conversation_id})",
             fallback_factory=list,
         )
+        
+        # Store in cache
+        self._put_in_cache(cache_key, result)
+        return result
 
-    def get_conversation_bundle(self, conversation_id: Optional[str], limit: int = 5) -> Dict[str, Any]:
+    def get_conversation_bundle(self, conversation_id: Optional[str], limit: int = None) -> Dict[str, Any]:
+        """
+        Get conversation bundle with recent messages, drafts, tool invocations, and audit events.
+        Phase 2 Optimization: Added caching layer.
+        
+        Args:
+            conversation_id: The conversation ID to fetch data for
+            limit: Maximum messages to fetch (defaults to AIDAAN_HISTORY_WINDOW from settings)
+        
+        Returns:
+            Dictionary containing recent conversation data, limited by settings
+        """
         if not conversation_id:
             return self._empty_conversation_bundle()
+
+        # Use settings default if limit not specified
+        if limit is None:
+            limit = settings.AIDAAN_HISTORY_WINDOW
+
+        # Phase 2 Optimization: Check cache first
+        cache_key = f"bundle:{conversation_id}:{limit}"
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result is not None:
+            return cached_result
 
         def _fetch():
             with get_db_session() as session:
                 return {
                     "recent_messages": self.aidaan.get_recent_messages(session, conversation_id, limit=limit),
-                    "recent_rfq_drafts": self.aidaan.get_recent_rfq_drafts(session, conversation_id, limit=limit),
-                    "recent_tool_invocations": self.aidaan.get_recent_tool_invocations(session, conversation_id, limit=limit),
+                    "recent_rfq_drafts": self.aidaan.get_recent_rfq_drafts(session, conversation_id),  # Uses AIDAAN_MAX_RFQ_DRAFTS
+                    "recent_tool_invocations": self.aidaan.get_recent_tool_invocations(session, conversation_id),  # Uses AIDAAN_MAX_TOOL_INVOCATIONS
                     "kill_switch_status": self.get_kill_switch_status(),
-                    "recent_audit_events": self.aidaan.get_recent_audit_events(session, conversation_id, limit=limit),
+                    "recent_audit_events": self.aidaan.get_recent_audit_events(session, conversation_id),  # Uses AIDAAN_MAX_AUDIT_EVENTS
                 }
 
-        return self._execute_with_retry(
+        result = self._execute_with_retry(
             _fetch,
             label=f"Conversation bundle lookup ({conversation_id})",
             fallback_factory=self._empty_conversation_bundle,
         )
+        
+        # Store in cache
+        self._put_in_cache(cache_key, result)
+        return result
 
     def get_kill_switch_status(self, *, scope: str = "venue", venue: str = "global") -> Dict[str, Any]:
         with get_db_session() as session:
@@ -421,6 +544,9 @@ class OperationalDataService:
                 )
 
         self._execute_with_retry(_persist, label=f"Message persistence ({conversation_id})")
+        
+        # Phase 2 Optimization: Invalidate cache after new message
+        self._invalidate_cache(conversation_id)
 
     def persist_tool_invocation(
         self,

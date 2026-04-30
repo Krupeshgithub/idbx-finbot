@@ -40,6 +40,24 @@ async def startup_event():
     """
     initialize_database()
     logger.info("[Startup] Database bootstrap complete.")
+    
+    # Pre-initialize DLP client to avoid first-request latency
+    try:
+        from app.core.dlp_client import dlp_client
+        dlp_client.initialize()
+        logger.info("[Startup] DLP client pre-initialized successfully.")
+    except Exception as e:
+        logger.warning(f"[Startup] DLP client pre-initialization failed (non-critical): {e}")
+    
+    # Pre-load FinBERT model to avoid 87s cold start on first news query
+    try:
+        import asyncio
+        from app.services.aidaan.core.sentiment import sentiment_analyzer
+        logger.info("[Startup] Pre-loading FinBERT model...")
+        await asyncio.to_thread(sentiment_analyzer.load_model)
+        logger.info("[Startup] FinBERT model pre-loaded successfully.")
+    except Exception as e:
+        logger.warning(f"[Startup] FinBERT pre-load failed (non-critical): {e}")
 
 
 @app.get("/health", tags=["health"])

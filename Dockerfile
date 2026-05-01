@@ -1,5 +1,5 @@
 # Use NVIDIA CUDA base image for GPU support
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.2.0-cudnn8-runtime-ubuntu22.04
 
 # Install Python 3.11
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,7 +31,7 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install PyTorch with CUDA support first
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu122
 
 # Install other requirements
 RUN pip install --no-cache-dir -r requirements.txt

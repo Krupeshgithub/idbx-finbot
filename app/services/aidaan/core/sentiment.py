@@ -50,7 +50,7 @@ class NewsSentimentAnalyzer:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
-                dtype=torch.float16 if torch.cuda.is_available() else torch.float32,  # FP16 for speed
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,  # FP16 for speed
                 use_safetensors=True,  # Use safetensors for secure loading
             )
             

@@ -96,9 +96,9 @@ websockets==16.0
 wsproto==1.3.2
 # GPU-Accelerated ML Libraries
 torch>=2.6.0  # PyTorch with CUDA support (required for security fix)
-transformers>=4.30.0  # HuggingFace Transformers
-accelerate>=0.20.0  # Fast model loading and inference
-optimum>=1.12.0  # Optimized inference
+transformers==4.44.2  # HuggingFace Transformers (pinned for stability)
+accelerate==0.33.0  # Fast model loading and inference
+optimum==1.21.4  # Optimized inference
 numpy>=1.24.0
 sentencepiece>=0.1.99  # For tokenization
 safetensors>=0.4.0  # Fast and secure model loading

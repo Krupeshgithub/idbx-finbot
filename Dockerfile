@@ -28,7 +28,6 @@ ENV TORCH_CUDNN_V8_API_ENABLED=1
 
 # HuggingFace cache dir - model baked into image
 ENV HF_HOME=/app/hf_cache
-ENV TRANSFORMERS_CACHE=/app/hf_cache
 
 WORKDIR /app
 

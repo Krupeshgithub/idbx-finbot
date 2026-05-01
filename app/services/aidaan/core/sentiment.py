@@ -43,26 +43,20 @@ class NewsSentimentAnalyzer:
                 gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
                 logger.info(f"✓ GPU Detected: {gpu_name} ({gpu_memory:.1f}GB VRAM)")
             
-            # Load model and tokenizer - use local path if available
+            # Load model and tokenizer - use HF cache (baked into image at build time)
             model_name = "ProsusAI/finbert"
-            local_model_path = "/models/finbert"
-            
-            import os
-            if os.path.exists(local_model_path) and os.listdir(local_model_path):
-                model_source = local_model_path
-                logger.info(f"Loading {model_name} from local path: {local_model_path}")
-            else:
-                model_source = model_name
-                logger.info(f"Loading {model_name} from HuggingFace Hub...")
-            
+            model_source = model_name
             logger.info(f"Loading {model_name} to {self.device}...")
             
             self.tokenizer = AutoTokenizer.from_pretrained(model_source)
             self.model = AutoModelForSequenceClassification.from_pretrained(
                 model_source,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,  # FP16 for speed
-                use_safetensors=True,  # Use safetensors for secure loading
+                use_safetensors=False,  # Use pytorch_model.bin (finbert has no safetensors)
             )
+            
+            # Cast to FP16 after loading for GPU speed
+            if torch.cuda.is_available():
+                self.model = self.model.half()  # FP16 for speed
             
             # Move model to GPU
             self.model.to(self.device)

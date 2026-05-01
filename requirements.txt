@@ -93,6 +93,15 @@ uvloop==0.22.1
 watchfiles==1.1.1
 websockets==16.0
 wsproto==1.3.2
-transformers
-torch
+# GPU-Accelerated ML Libraries
+torch>=2.0.0  # PyTorch with CUDA support
+transformers>=4.30.0  # HuggingFace Transformers
+accelerate>=0.20.0  # Fast model loading and inference
+optimum>=1.12.0  # Optimized inference
 numpy>=1.24.0
+sentencepiece>=0.1.99  # For tokenization
+safetensors>=0.3.1  # Fast model loading
+
+# GPU Monitoring
+pynvml>=11.5.0  # NVIDIA GPU monitoring
+gpustat>=1.1.1  # GPU stats

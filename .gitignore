@@ -233,3 +233,4 @@ backup.sql
 check_schema.py
 QUICK_TEST_COMMANDS.sh
 run_migration.py
+.kiro

@@ -36,10 +36,18 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """
-    Initialize operational storage after the app boots.
+    Initialize operational storage and pre-load GPU models.
     """
     initialize_database()
     logger.info("[Startup] Database bootstrap complete.")
+    
+    # Initialize GPU monitoring
+    try:
+        from app.core.gpu_monitor import gpu_monitor
+        gpu_monitor.log_stats()
+        logger.info("[Startup] GPU monitoring initialized.")
+    except Exception as e:
+        logger.warning(f"[Startup] GPU monitoring failed (non-critical): {e}")
     
     # Pre-initialize DLP client to avoid first-request latency
     try:
@@ -49,13 +57,17 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"[Startup] DLP client pre-initialization failed (non-critical): {e}")
     
-    # Pre-load FinBERT model to avoid 87s cold start on first news query
+    # Pre-load FinBERT model on GPU to avoid cold start
     try:
         import asyncio
         from app.services.aidaan.core.sentiment import sentiment_analyzer
-        logger.info("[Startup] Pre-loading FinBERT model...")
+        logger.info("[Startup] 🚀 Pre-loading FinBERT model on GPU...")
         await asyncio.to_thread(sentiment_analyzer.load_model)
-        logger.info("[Startup] FinBERT model pre-loaded successfully.")
+        logger.info("[Startup] ✓ FinBERT model pre-loaded on GPU successfully.")
+        
+        # Log GPU stats after model loading
+        from app.core.gpu_monitor import gpu_monitor
+        gpu_monitor.log_stats()
     except Exception as e:
         logger.warning(f"[Startup] FinBERT pre-load failed (non-critical): {e}")
 
@@ -71,6 +83,22 @@ async def health_check():
         "alloydb_enabled": db_config.alloydb_enabled,
         "kill_switch_active": kill_switch_service.is_active(),
     }
+
+
+@app.get("/gpu-stats", tags=["health"])
+async def gpu_stats():
+    """
+    Get current GPU statistics and utilization.
+    """
+    try:
+        from app.core.gpu_monitor import gpu_monitor
+        stats = gpu_monitor.get_stats()
+        return stats
+    except Exception as e:
+        return {
+            "available": False,
+            "error": str(e)
+        }
 
 
 # Include API routes under the /v1 prefix

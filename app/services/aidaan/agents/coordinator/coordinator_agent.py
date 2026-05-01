@@ -32,6 +32,7 @@ from app.services.aidaan.agents.operational.operational_agent import operational
 from app.services.aidaan.agents.calculation.calculation_agent import calculation_agent
 from app.services.aidaan.runtime_context import runtime_context_service
 from app.services.kill_switch import kill_switch_service
+from app.core.guardrail_orchestrator import guardrail_orchestrator
 
 # Register agents with the global registry
 registry.register("market", market_agent)
@@ -731,8 +732,52 @@ class CoordinatorAgent(BaseAgent):
                 latency_ms=latency_ms,
             )
 
-        # 1. Routing phase
+        # 1. Pre-processing Guardrails
         context = context or {}
+        username = context.get("username")
+        
+        guardrail_result = guardrail_orchestrator.pre_process_request(
+            text,
+            username=username,
+            conversation_id=conv_id,
+            context=context
+        )
+        
+        # Update context with guardrail flags
+        context.update(guardrail_result.get("context_updates", {}))
+        
+        # If request is blocked by guardrails, return early
+        if not guardrail_result["allowed"]:
+            latency_ms = (time.monotonic() - start_time) * 1000
+            logger.warning(
+                "[Coordinator] Request blocked by guardrails | conv_id=%s reason=%s",
+                conv_id,
+                guardrail_result["blocked_reason"]
+            )
+            return self.build_message_response(
+                reply=guardrail_result["blocked_reason"],
+                bullets=[
+                    "Request blocked by institutional guardrails",
+                    "No action was taken"
+                ],
+                conversation_id=conv_id,
+                model_info=self.get_model_info(model_override="guardrail-block"),
+                latency_ms=latency_ms,
+                guardrails=[{
+                    "type": "kill_switch_block",
+                    "reason": guardrail_result["blocked_reason"]
+                }]
+            )
+        
+        # Log advisory detection if present
+        if guardrail_result["advisory_detected"]:
+            logger.info(
+                "[Coordinator] Advisory intent detected | conv_id=%s confidence=%.2f",
+                conv_id,
+                context.get("advisory_confidence", 0.0)
+            )
+
+        # 2. Routing phase (legacy kill switch check kept for backward compatibility)
         if kill_switch_service.is_active() and kill_switch_service.request_has_trade_intent(text):
             status = kill_switch_service.get_status()
             logger.warning(
@@ -785,6 +830,31 @@ class CoordinatorAgent(BaseAgent):
             
             agent_elapsed = time.monotonic() - agent_start
             logger.info(f"[TIMING] Agent {agent_id} completed | elapsed={agent_elapsed:.3f}s")
+            
+            # Post-processing Guardrails: Reframe advisory responses
+            if context.get("advisory_detected"):
+                original_reply = response.reply
+                reframed_reply = await guardrail_orchestrator.post_process_response(
+                    original_reply,
+                    context=context,
+                    conversation_id=conv_id,
+                    original_query=text
+                )
+                
+                if reframed_reply != original_reply:
+                    response.reply = reframed_reply
+                    logger.info(
+                        "[Coordinator] Response reframed for advisory compliance | conv_id=%s",
+                        conv_id
+                    )
+                    
+                    # Add guardrail metadata to response
+                    if not hasattr(response, 'guardrails') or response.guardrails is None:
+                        response.guardrails = []
+                    response.guardrails.append({
+                        "type": "advisory_reframed",
+                        "confidence": context.get("advisory_confidence", 0.0)
+                    })
             
             # Inject latency into the final response
             response.latency_ms = (time.monotonic() - start_time) * 1000

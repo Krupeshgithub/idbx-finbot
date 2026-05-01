@@ -51,13 +51,14 @@ class Settings(BaseSettings):
     
     # --- Vertex AI ---
     VERTEX_AI_MODEL_NAME: str = "gemini-2.5-flash"
+    GEMINI_MODEL_NAME: str = "gemini-2.5-flash"  # Alias for consistency
     VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
     VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-2.5-flash"
     VERTEX_AI_API_VERSION: str = "v1"
     VERTEX_AI_TEMPERATURE: float = 0.2
     VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192
     VERTEX_AI_MAX_WORKERS: int = 12
-    VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 8
+    VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 12
     VERTEX_AI_REQUEST_TIMEOUT_SECONDS: int = 120  # 2 minutes timeout for Gemini API calls
     VERTEX_AI_MAX_TOOLS_PER_TURN: int = 10  # Limit tools per turn to prevent context overflow
     VERTEX_AI_USE_EXPRESS_MODE: bool = True
@@ -75,6 +76,12 @@ class Settings(BaseSettings):
     KILL_SWITCH_ACTIVE: bool = False
     KILL_SWITCH_REASON: str = "Kill switch is not active."
     MAX_PASSWORD_BYTES: int = 72
+    
+    # --- Guardrails ---
+    ENABLE_ADVISORY_DETECTION: bool = True
+    ADVISORY_CONFIDENCE_THRESHOLD: float = 0.85
+    ENABLE_STRATEGIC_DATA_REDACTION: bool = True
+    ENABLE_PII_REDACTION: bool = True
 
     # --- Multi-Language Support ---
     SUPPORTED_LANGUAGES: str = "All"

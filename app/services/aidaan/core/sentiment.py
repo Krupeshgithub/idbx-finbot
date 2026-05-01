@@ -192,13 +192,16 @@ class NewsSentimentAnalyzer:
             
             elapsed_ms = (time.monotonic() - start_time) * 1000
             
-            # Log with GPU stats
+            # Log with GPU stats — sample utilization DURING inference for accuracy
             gpu_info = ""
             if self.device.type == "cuda":
                 import torch
-                gpu_util = torch.cuda.utilization(0) if hasattr(torch.cuda, 'utilization') else 0
+                # Note: utilization() is a point-in-time sample. For short batches (<100ms),
+                # it will often read 0% because the GPU burst completes before sampling.
+                # Memory allocation is the reliable indicator that GPU was used.
                 gpu_mem = torch.cuda.memory_allocated(0) / 1024**2
-                gpu_info = f"GPU: {gpu_util}% util, {gpu_mem:.1f}MB | "
+                gpu_mem_peak = torch.cuda.max_memory_allocated(0) / 1024**2
+                gpu_info = f"GPU: {gpu_mem:.1f}MB active ({gpu_mem_peak:.1f}MB peak) | "
             
             logger.info(
                 f"[FinBERT] ⚡ Batch Analysis | "

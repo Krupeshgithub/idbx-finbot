@@ -389,6 +389,25 @@ class CoordinatorAgent(BaseAgent):
             ), "control_signal")
 
         if lowered.startswith(("stage ", "rfq ", "buy ", "sell ")):
+            # If the staging request includes pre-conditions (fetch/calculate/consult/check),
+            # route to market agent first — it has MCP tools + A2A to handle all pre-steps.
+            # Only route directly to order agent for simple "stage X notional Y tenor Z" requests.
+            has_preconditions = bool(re.search(
+                r"\b(fetch|calculate|consult|check|first|before|if sentiment|run finbert|"
+                r"dv01|limit|yield|news|sentiment|risk agent|FinBERT)\b",
+                lowered,
+            ))
+            if has_preconditions:
+                logger.info(
+                    "[Coordinator] Stage/RFQ with pre-conditions detected — routing to market agent for orchestration | text_preview=%s",
+                    lowered[:120],
+                )
+                return _log_heuristic(self._default_routing_decision(
+                    "market",
+                    "Stage/RFQ with pre-conditions (fetch/calculate/consult) — market agent orchestrates first.",
+                    sub_intent="market_analysis",
+                    confidence=0.97,
+                ), "order_with_preconditions")
             return _log_heuristic(self._default_routing_decision(
                 "order",
                 "Execution or staging verb matched heuristic.",
@@ -468,17 +487,45 @@ class CoordinatorAgent(BaseAgent):
             ), "sentiment_keyword")
 
         # Calculation/Math queries
+        # STRICT RULE: Only route to calculation agent when:
+        # 1. Query contains explicit portfolio math keywords AND
+        # 2. No live data fetch is needed (no fetch/pull/get verbs) AND
+        # 3. No market/crypto/FX context is present
+        # The calculation agent has NO MCP tools — it cannot fetch live data.
         calculation_keywords = {
-            "sharpe", "beta", "volatility", "var", "value at risk", "drawdown",
-            "correlation", "covariance", "standard deviation", "calculate",
-            "computation", "formula", "ratio", "metric", "risk metric",
-            "portfolio optimization", "rebalance", "allocation", "optimize"
+            "sharpe ratio", "weighted beta", "value at risk",
+            "portfolio optimization", "minimum variance",
+            "rebalance my portfolio", "optimize my portfolio",
+            "var 95", "var 99",
         }
-        
-        if any(k in lowered for k in calculation_keywords):
+
+        # Guard: broad set — if ANY of these are present, route to market/risk instead
+        live_data_guard = {
+            # Fetch verbs
+            "fetch", "pull", "get ", "retrieve", "show me", "find",
+            # Market instruments
+            "bitcoin", "btc", "eth", "ethereum", "crypto", "altcoin",
+            "aapl", "msft", "tsla", "nvda", "reliance", "infy", "hdfc",
+            "stock", "price", "quote", "ticker",
+            # FX
+            "usd", "inr", "jpy", "eur", "gbp", "fx", "forex", "exchange rate",
+            "carry trade", "convert",
+            # Options
+            "straddle", "strangle", "call", "put", "strike", "premium",
+            "implied volatility", "iv", "dte", "options",
+            # News/sentiment
+            "news", "sentiment", "finbert", "bullish", "bearish",
+            # Risk agent
+            "risk agent", "desk limit", "consult",
+            # Bond/macro
+            "g-sec", "gsec", "treasury", "yield", "bond", "rbi", "fed",
+        }
+        has_live_data_context = any(k in lowered for k in live_data_guard)
+
+        if any(k in lowered for k in calculation_keywords) and not has_live_data_context:
             return _log_heuristic(self._default_routing_decision(
                 "calculation",
-                "Calculation/math keyword matched heuristic.",
+                "Explicit portfolio math keyword matched with no live data context.",
                 sub_intent="portfolio_calculation",
                 confidence=0.94,
             ), "calculation_keyword")
@@ -899,6 +946,13 @@ class CoordinatorAgent(BaseAgent):
             has_pending_follow_up=has_pending_follow_up,
         )
         if heuristic_decision:
+            logger.info(
+                "[Coordinator] 🎯 HEURISTIC ROUTE | agent=%s sub_intent=%s confidence=%.2f | reason=%s",
+                heuristic_decision.get("intent"),
+                heuristic_decision.get("sub_intent"),
+                float(heuristic_decision.get("confidence") or 0.0),
+                heuristic_decision.get("reason"),
+            )
             return heuristic_decision
 
         logger.info(

@@ -29,22 +29,23 @@ async def consult_specialist_agent(
     uname = current_username.get(None)
 
     logger.info(
-        "[A2A_SPINE] >>> INITIATING SECURE A2A HANDSHAKE >>> | target=%s | conv_id=%s | user=%s\n[A2A_QUERY] %s",
-        target_agent, conv_id, uname, query
+        "[A2A_SPINE] >>> INITIATING SECURE A2A HANDSHAKE >>> | target=%s | conv_id=%s | user=%s",
+        target_agent, conv_id, uname
     )
+    logger.info("[A2A_QUERY] query_len=%s | preview=%s", len(query), query[:200])
     
     agent = registry.get_agent(target_agent)
     if not agent:
-        logger.error(f"[A2A_ERROR] Agent '{target_agent}' not found in internal registry.")
+        logger.error("[A2A_ERROR] ❌ Agent '%s' not found in registry. Available: %s",
+                     target_agent, registry.list_agents())
         return {"error": f"Agent '{target_agent}' not found in registry."}
 
     if not conv_id:
-        logger.error("[A2A_ERROR] Missing conversation_id in context boundary. Rejecting to prevent leakage.")
+        logger.error("[A2A_ERROR] ❌ Missing conversation_id — rejecting to prevent context leakage.")
         return {"error": "Secure execution failed. Missing conversation boundary context."}
 
     try:
-        # Simulate an internal direct call crossing agent boundaries
-        logger.info(f"[A2A_EXECUTE] 🏃 Passing context to {target_agent}.handle_message()...")
+        logger.info("[A2A_EXECUTE] 🏃 Delegating to %s.handle_message() | conv_id=%s", target_agent, conv_id)
         response = await agent.handle_message(
             text=query,
             conversation_id=conv_id,
@@ -52,10 +53,12 @@ async def consult_specialist_agent(
         )
         
         latency = int((time.monotonic() - start_time) * 1000)
+        reply_preview = response.reply[:200] + "..." if len(response.reply) > 200 else response.reply
         logger.info(
-            "[A2A_SPINE] <<< A2A HANDSHAKE SUCCESS <<< | target=%s | latency=%sms\n[A2A_RESPONSE] %s",
-            target_agent, latency, response.reply[:150] + "..." if len(response.reply) > 150 else response.reply
+            "[A2A_SPINE] <<< A2A HANDSHAKE SUCCESS <<< | target=%s | latency_ms=%s | bullets=%s",
+            target_agent, latency, len(response.bullets)
         )
+        logger.info("[A2A_RESPONSE] %s", reply_preview)
         
         # We must return a plain dictionary for the LLM tool parsing
         return {
@@ -68,5 +71,8 @@ async def consult_specialist_agent(
         }
     except Exception as exc:
         latency = int((time.monotonic() - start_time) * 1000)
-        logger.error(f"[A2A_ERROR] Call to {target_agent} failed catastrophically after {latency}ms: {exc}")
+        logger.error(
+            "[A2A_ERROR] ❌ Call to '%s' FAILED | latency_ms=%s | error=%s",
+            target_agent, latency, exc
+        )
         return {"error": f"A2A call failed: {exc}"}

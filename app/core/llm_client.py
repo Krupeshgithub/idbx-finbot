@@ -1122,6 +1122,20 @@ class LLMClient:
                     logger.warning("[LLMClient][%s] Detected invalid Unicode escapes in MCP response, attempting repair", trace_id)
                     raw = self._repair_unicode_escapes(raw)
 
+                # Guard: if JSON is truncated (unterminated string), attempt recovery
+                # by finding the last complete JSON object boundary
+                if not raw.endswith("}"):
+                    logger.warning(
+                        "[LLMClient][%s] MCP response appears truncated (len=%s). Attempting JSON recovery.",
+                        trace_id or "no-trace",
+                        len(raw),
+                    )
+                    # Find the last valid closing brace
+                    last_brace = raw.rfind("}")
+                    if last_brace > 0:
+                        raw = raw[: last_brace + 1]
+                        logger.info("[LLMClient][%s] JSON recovery: trimmed to last '}'", trace_id or "no-trace")
+
                 parsed = self._extract_json(raw)
                 # NOTE: DLP redaction on LLM-generated responses is intentionally skipped.
                 # Input-side redaction is sufficient; model output does not reproduce raw PII.
@@ -1142,12 +1156,34 @@ class LLMClient:
                 return parsed
             except Exception as exc:
                 last_error = exc
+                is_429 = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
                 logger.error(
                     "[LLMClient][%s] MCP tool loop failed | elapsed_ms=%s: %s",
                     trace_id or "no-trace",
                     self._elapsed_ms(start),
                     exc,
                 )
+                if is_429:
+                    # 429 on MCP loop: wait longer and surface a user-friendly message
+                    # rather than a raw error. The outer agent will catch this gracefully.
+                    logger.warning(
+                        "[LLMClient][%s] 429 RESOURCE_EXHAUSTED on MCP loop — quota exceeded. "
+                        "Returning graceful degradation response.",
+                        trace_id or "no-trace",
+                    )
+                    return {
+                        "reply": (
+                            "[Direct Answer] The market data service is temporarily rate-limited "
+                            "(API quota exceeded). Please retry this query in 30–60 seconds. "
+                            "Your request was: a technical analysis requiring live market tools."
+                        ),
+                        "bullets": [
+                            "Rate limit hit: Gemini API quota temporarily exhausted",
+                            "Retry in 30–60 seconds",
+                            "No data was lost — your question is valid",
+                        ],
+                        "format": "text",
+                    }
 
         return {"error": str(last_error) if last_error else "Vertex AI tool loop failed"}
 

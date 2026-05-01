@@ -10,8 +10,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      cloud-sql-proxy:
-        condition: service_started
     volumes:
       - .:/app
     command: uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-exclude .venv --reload-exclude .git --reload-exclude __pycache__ --reload-exclude *.pyc --reload-exclude locustfile_ws_aidaan.py
@@ -38,18 +36,6 @@ services:
             - driver: nvidia
               device_ids: ['0']
               capabilities: [gpu, compute, utility]
-
-  cloud-sql-proxy:
-    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
-    container_name: aidaan_cloud_sql_proxy
-    command:
-      - "--address=0.0.0.0"
-      - "--port=5432"
-      - "idbx-backend-dev:us-central1:idbx-development"
-      - "--credentials-file=/config/cloud-sql-service-account.json"
-    volumes:
-      - ./gen-lang-client-0710731093-26add4ee7529.json:/config/cloud-sql-service-account.json:ro
-    restart: unless-stopped
 
   redis:
     image: redis:7.2-alpine

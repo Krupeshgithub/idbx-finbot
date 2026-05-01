@@ -31,7 +31,7 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install PyTorch with CUDA support first
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu122
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Install other requirements
 RUN pip install --no-cache-dir -r requirements.txt

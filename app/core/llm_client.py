@@ -764,6 +764,7 @@ class LLMClient:
         tool_callback: Optional[Callable[[str], Any]] = None,
         response_schema: Optional[Any] = None,
         system_instruction: Optional[str] = None,
+        skip_dlp: bool = False,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON using Vertex AI.
@@ -802,9 +803,12 @@ class LLMClient:
         # REDACT PII via DLP before Vertex processes it
         dlp_start = time.monotonic()
         logger.info(f"[TIMING] Starting DLP redaction | trace_id={trace_id}")
-        prompt = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, prompt)
+        if skip_dlp:
+            logger.debug("[LLMClient][%s] DLP skipped (already ran on raw input)", trace_id)
+        else:
+            prompt = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, prompt)
         dlp_elapsed = self._elapsed_ms(dlp_start)
-        logger.info("[LLMClient][%s] DLP redaction completed | latency_ms=%s", trace_id, dlp_elapsed)
+        logger.info("[LLMClient][%s] DLP redaction completed | latency_ms=%s | skipped=%s", trace_id, dlp_elapsed, skip_dlp)
         logger.info(f"[TIMING] DLP completed | elapsed={dlp_elapsed/1000:.3f}s")
 
         # Helper: add JSON instruction for non-strict calls

@@ -147,6 +147,8 @@ class MarketAgent(BaseAgent):
             + " 4. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
             + " 5. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity.\n"
             + " 6. ANTI-HALLUCINATION: NEVER fabricate, invent, or estimate specific financial numbers (prices, yields, rates, volumes, EPS, P/E ratios) without tool data. If tools are not available and the user asks for specific numbers, explicitly state: 'I do not have live data for this — please use the fetch tools or provide the data.' Do NOT make up plausible-looking tables or figures.\n"
+            + " 7. SENTIMENT REQUESTS: If the user asks for 'FinBERT sentiment', 'news sentiment', or 'latest news' for ANY instrument — you MUST call `get_market_news` with the appropriate ticker. Do NOT skip this step or claim you cannot do it. The tool handles FinBERT automatically.\n"
+            + " 8. RISK AGENT: If the user says 'consult risk agent', 'check desk limit', or 'does this breach' — you MUST call `consult_specialist_agent` with target_agent='risk'. Do NOT skip this step.\n"
         )
 
         if sub_intent == "education":

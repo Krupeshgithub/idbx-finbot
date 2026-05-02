@@ -226,6 +226,15 @@ class CoordinatorAgent(BaseAgent):
             r"^show (me )?(my|the) (history|previous questions|recent questions)\b",
             r"^remind me what i asked\b",
             r"^what happened earlier in (this|the) (chat|conversation)\b",
+            # "give me last N questions" variants
+            r"^give me (my |the )?(last|previous|recent) \d+ questions?\b",
+            r"^(last|previous|recent) \d+ questions?\b",
+            r"^show (me )?(last|previous|recent) \d+ questions?\b",
+            r"^(meri|mere|mera) (last|pichle|purani) \d+ questions?\b",
+            # "my questions" / "my history"
+            r"^(give me |show me |list )?(my|the) (questions|history|chat history|conversation)\b",
+            r"^(what|which) questions? (did i|have i) ask",
+            r"^(list|show) (all |my )?(previous |recent |last )?(questions?|queries)\b",
         ]
         matched_pattern = next((pattern for pattern in history_patterns if re.search(pattern, normalized_text)), None)
         if matched_pattern:
@@ -296,7 +305,10 @@ class CoordinatorAgent(BaseAgent):
             "ticker", "quote", "volume", "chart", "analysis", "rsi", "macd", "sma",
             "revenue", "earnings", "profit", "loss", "dividend", "yield", "rate",
             "fund", "asset", "liability", "capital", "liquidity", "hedge", "option",
-            "future", "derivative", "commodity", "currency", "exchange", "index"
+            "future", "derivative", "commodity", "currency", "exchange", "index",
+            # Conversation/session meta-queries — always in-domain for this assistant
+            "question", "questions", "history", "asked", "previous", "last", "recent",
+            "conversation", "chat", "session", "discussed", "said", "told",
         }
         
         # If text contains any financial term, it's in-domain

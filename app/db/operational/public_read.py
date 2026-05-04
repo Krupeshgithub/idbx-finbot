@@ -190,17 +190,26 @@ class PublicReadRepository:
         # We call the LLM directly via SQL to summarize the user's data
         # This keeps our app layer thin and fast.
         stmt = text("""
-            SELECT google_ml.invoke_model(
-                'gemini-1.5-flash'::text, 
+            SELECT google_ml.predict_row(
+                'gemini-1.5-pro:generateContent'::varchar, 
                 json_build_object(
-                    'prompt', 'Summarize this trader profile in one professional sentence: ' || :user_json
-                )::jsonb
+                    'contents', json_build_array(
+                        json_build_object(
+                            'role', 'user',
+                            'parts', json_build_array(
+                                json_build_object(
+                                    'text', 'Summarize this trader profile in one professional sentence: ' || :user_json
+                                )
+                            )
+                        )
+                    )
+                )::json
             )
         """)
         
         result = session.execute(stmt, {"user_json": json.dumps(user)}).scalar()
         try:
-            return result.get("predictions", [{}])[0].get("content", "No summary available.")
+            return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "No summary available.")
         except (AttributeError, IndexError):
             return "Unable to generate AI summary."
 
@@ -212,17 +221,26 @@ class PublicReadRepository:
         limits = self.get_desk_limits(session, desk_id)
         
         stmt = text("""
-            SELECT google_ml.invoke_model(
-                'gemini-1.5-flash'::text,
+            SELECT google_ml.predict_row(
+                'gemini-1.5-pro:generateContent'::varchar,
                 json_build_object(
-                    'prompt', 'Based on these desk limits, describe the risk capacity in one concise sentence: ' || :limits_json
-                )::jsonb
+                    'contents', json_build_array(
+                        json_build_object(
+                            'role', 'user',
+                            'parts', json_build_array(
+                                json_build_object(
+                                    'text', 'Based on these desk limits, describe the risk capacity in one concise sentence: ' || :limits_json
+                                )
+                            )
+                        )
+                    )
+                )::json
             )
         """)
         
         result = session.execute(stmt, {"limits_json": json.dumps(limits[:5])}).scalar()
         try:
-            return result.get("predictions", [{}])[0].get("content", "Desk capacity analysis unavailable.")
+            return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "Desk capacity analysis unavailable.")
         except (AttributeError, IndexError):
             return "Unable to analyze desk capacity."
 

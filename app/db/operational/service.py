@@ -438,7 +438,18 @@ class OperationalDataService:
                         combined.append(msg)
                 
                 # Sort by creation time to keep the conversation logical
-                combined.sort(key=lambda x: x.get("created_at") or "")
+                # Convert datetime to ISO string for consistent sorting
+                def _sort_key(msg):
+                    created_at = msg.get("created_at")
+                    if created_at is None:
+                        return ""
+                    # If it's a datetime object, convert to ISO string
+                    if hasattr(created_at, 'isoformat'):
+                        return created_at.isoformat()
+                    # If it's already a string, return as-is
+                    return str(created_at)
+                
+                combined.sort(key=_sort_key)
                 return combined
 
         return self._execute_with_retry(

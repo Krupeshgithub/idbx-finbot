@@ -191,7 +191,7 @@ class PublicReadRepository:
         # This keeps our app layer thin and fast.
         stmt = text("""
             SELECT google_ml.predict_row(
-                'gemini-1.5-pro:generateContent'::varchar, 
+                'gemini-2.5-pro:generateContent'::varchar, 
                 json_build_object(
                     'contents', json_build_array(
                         json_build_object(
@@ -222,7 +222,7 @@ class PublicReadRepository:
         
         stmt = text("""
             SELECT google_ml.predict_row(
-                'gemini-1.5-pro:generateContent'::varchar,
+                'gemini-2.5-pro:generateContent'::varchar,
                 json_build_object(
                     'contents', json_build_array(
                         json_build_object(

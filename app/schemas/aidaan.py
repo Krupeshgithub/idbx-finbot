@@ -3,7 +3,7 @@ AIDAAN API Pydantic Schemas.
 Standardized models for institutional messaging and tool orchestration.
 """
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ActionItem(BaseModel):
@@ -71,6 +71,23 @@ class UserValidationResponse(BaseModel):
     conversation_id: Optional[str] = None
     source_schema: str = "public"
     storage_schema: str = "aidaan"
+
+    @field_validator(
+        "user_id",
+        "trader_id",
+        "full_name",
+        "risk_tier",
+        "status",
+        "desk",
+        "desk_id",
+        "conversation_id",
+        mode="before",
+    )
+    @classmethod
+    def coerce_optional_strings(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        return str(value)
 
 
 class ToolInvokeRequest(BaseModel):

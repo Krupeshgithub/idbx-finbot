@@ -191,10 +191,10 @@ class PublicReadRepository:
         # This keeps our app layer thin and fast.
         stmt = text("""
             SELECT google_ml.invoke_model(
-                'gemini-1.5-flash', -- High-speed reasoning model
+                'gemini-1.5-flash'::text, 
                 json_build_object(
                     'prompt', 'Summarize this trader profile in one professional sentence: ' || :user_json
-                )
+                )::jsonb
             )
         """)
         
@@ -213,10 +213,10 @@ class PublicReadRepository:
         
         stmt = text("""
             SELECT google_ml.invoke_model(
-                'gemini-1.5-flash',
+                'gemini-1.5-flash'::text,
                 json_build_object(
                     'prompt', 'Based on these desk limits, describe the risk capacity in one concise sentence: ' || :limits_json
-                )
+                )::jsonb
             )
         """)
         

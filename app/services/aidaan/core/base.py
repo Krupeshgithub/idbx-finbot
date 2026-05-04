@@ -85,8 +85,16 @@ class BaseAgent(ABC):
         """
         if conversation_id:
             from app.services.aidaan.runtime_context import current_conversation_id, current_username
+            from app.core.dlp_client import dlp_client
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
             current_conversation_id.set(conversation_id)
             current_username.set(username)
+            # DLP runs on the raw user prompt ONLY — before history is appended.
+            # This avoids scanning 20KB of conversation history on every call.
+            prompt = await asyncio.get_event_loop().run_in_executor(
+                None, dlp_client.redact_pii, prompt
+            )
             prompt = runtime_context_service.build_prompt_context(
                 base_prompt=prompt,
                 conversation_id=conversation_id,
@@ -99,6 +107,7 @@ class BaseAgent(ABC):
             tool_callback=tool_callback,
             response_schema=response_schema,
             system_instruction=system_instruction,
+            skip_dlp=True,  # DLP already ran above on the raw input
         )
         if parsed.get("error"):
             raise RuntimeError(parsed["error"])

@@ -764,6 +764,7 @@ class LLMClient:
         tool_callback: Optional[Callable[[str], Any]] = None,
         response_schema: Optional[Any] = None,
         system_instruction: Optional[str] = None,
+        skip_dlp: bool = False,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON using Vertex AI.
@@ -802,9 +803,12 @@ class LLMClient:
         # REDACT PII via DLP before Vertex processes it
         dlp_start = time.monotonic()
         logger.info(f"[TIMING] Starting DLP redaction | trace_id={trace_id}")
-        prompt = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, prompt)
+        if skip_dlp:
+            logger.debug("[LLMClient][%s] DLP skipped (already ran on raw input)", trace_id)
+        else:
+            prompt = await asyncio.get_event_loop().run_in_executor(_executor, dlp_client.redact_pii, prompt)
         dlp_elapsed = self._elapsed_ms(dlp_start)
-        logger.info("[LLMClient][%s] DLP redaction completed | latency_ms=%s", trace_id, dlp_elapsed)
+        logger.info("[LLMClient][%s] DLP redaction completed | latency_ms=%s | skipped=%s", trace_id, dlp_elapsed, skip_dlp)
         logger.info(f"[TIMING] DLP completed | elapsed={dlp_elapsed/1000:.3f}s")
 
         # Helper: add JSON instruction for non-strict calls
@@ -1122,6 +1126,20 @@ class LLMClient:
                     logger.warning("[LLMClient][%s] Detected invalid Unicode escapes in MCP response, attempting repair", trace_id)
                     raw = self._repair_unicode_escapes(raw)
 
+                # Guard: if JSON is truncated (unterminated string), attempt recovery
+                # by finding the last complete JSON object boundary
+                if not raw.endswith("}"):
+                    logger.warning(
+                        "[LLMClient][%s] MCP response appears truncated (len=%s). Attempting JSON recovery.",
+                        trace_id or "no-trace",
+                        len(raw),
+                    )
+                    # Find the last valid closing brace
+                    last_brace = raw.rfind("}")
+                    if last_brace > 0:
+                        raw = raw[: last_brace + 1]
+                        logger.info("[LLMClient][%s] JSON recovery: trimmed to last '}'", trace_id or "no-trace")
+
                 parsed = self._extract_json(raw)
                 # NOTE: DLP redaction on LLM-generated responses is intentionally skipped.
                 # Input-side redaction is sufficient; model output does not reproduce raw PII.
@@ -1142,12 +1160,34 @@ class LLMClient:
                 return parsed
             except Exception as exc:
                 last_error = exc
+                is_429 = "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
                 logger.error(
                     "[LLMClient][%s] MCP tool loop failed | elapsed_ms=%s: %s",
                     trace_id or "no-trace",
                     self._elapsed_ms(start),
                     exc,
                 )
+                if is_429:
+                    # 429 on MCP loop: wait longer and surface a user-friendly message
+                    # rather than a raw error. The outer agent will catch this gracefully.
+                    logger.warning(
+                        "[LLMClient][%s] 429 RESOURCE_EXHAUSTED on MCP loop — quota exceeded. "
+                        "Returning graceful degradation response.",
+                        trace_id or "no-trace",
+                    )
+                    return {
+                        "reply": (
+                            "[Direct Answer] The market data service is temporarily rate-limited "
+                            "(API quota exceeded). Please retry this query in 30–60 seconds. "
+                            "Your request was: a technical analysis requiring live market tools."
+                        ),
+                        "bullets": [
+                            "Rate limit hit: Gemini API quota temporarily exhausted",
+                            "Retry in 30–60 seconds",
+                            "No data was lost — your question is valid",
+                        ],
+                        "format": "text",
+                    }
 
         return {"error": str(last_error) if last_error else "Vertex AI tool loop failed"}
 

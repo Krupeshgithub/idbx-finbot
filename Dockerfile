@@ -1,5 +1,5 @@
 # Use NVIDIA CUDA base image for GPU support
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
 # Install Python 3.11
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,6 +26,9 @@ ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 ENV CUDA_LAUNCH_BLOCKING=0
 ENV TORCH_CUDNN_V8_API_ENABLED=1
 
+# HuggingFace cache dir - model baked into image
+ENV HF_HOME=/app/hf_cache
+
 WORKDIR /app
 
 COPY requirements.txt .
@@ -37,6 +40,9 @@ RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# Download FinBERT model into image at build time (no runtime download needed)
+RUN python scripts/download_model.py
 
 EXPOSE 8000
 

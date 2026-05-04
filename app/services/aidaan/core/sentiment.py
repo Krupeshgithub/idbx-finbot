@@ -43,16 +43,20 @@ class NewsSentimentAnalyzer:
                 gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
                 logger.info(f"✓ GPU Detected: {gpu_name} ({gpu_memory:.1f}GB VRAM)")
             
-            # Load model and tokenizer
+            # Load model and tokenizer - use HF cache (baked into image at build time)
             model_name = "ProsusAI/finbert"
+            model_source = model_name
             logger.info(f"Loading {model_name} to {self.device}...")
             
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_source)
             self.model = AutoModelForSequenceClassification.from_pretrained(
-                model_name,
-                dtype=torch.float16 if torch.cuda.is_available() else torch.float32,  # FP16 for speed
-                use_safetensors=True,  # Use safetensors for secure loading
+                model_source,
+                use_safetensors=False,  # Use pytorch_model.bin (finbert has no safetensors)
             )
+            
+            # Cast to FP16 after loading for GPU speed
+            if torch.cuda.is_available():
+                self.model = self.model.half()  # FP16 for speed
             
             # Move model to GPU
             self.model.to(self.device)
@@ -188,13 +192,16 @@ class NewsSentimentAnalyzer:
             
             elapsed_ms = (time.monotonic() - start_time) * 1000
             
-            # Log with GPU stats
+            # Log with GPU stats — sample utilization DURING inference for accuracy
             gpu_info = ""
             if self.device.type == "cuda":
                 import torch
-                gpu_util = torch.cuda.utilization(0) if hasattr(torch.cuda, 'utilization') else 0
+                # Note: utilization() is a point-in-time sample. For short batches (<100ms),
+                # it will often read 0% because the GPU burst completes before sampling.
+                # Memory allocation is the reliable indicator that GPU was used.
                 gpu_mem = torch.cuda.memory_allocated(0) / 1024**2
-                gpu_info = f"GPU: {gpu_util}% util, {gpu_mem:.1f}MB | "
+                gpu_mem_peak = torch.cuda.max_memory_allocated(0) / 1024**2
+                gpu_info = f"GPU: {gpu_mem:.1f}MB active ({gpu_mem_peak:.1f}MB peak) | "
             
             logger.info(
                 f"[FinBERT] ⚡ Batch Analysis | "

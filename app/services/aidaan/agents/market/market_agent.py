@@ -91,11 +91,23 @@ class MarketAgent(BaseAgent):
                 "fast_path_kind": "clarify_response",
             })
         elif sub_intent == "education" and not requires_freshness:
-            plan.update({
-                "tool_mode": "none",
-                "model_name": settings.VERTEX_AI_MODEL_NAME,
-                "fast_path_kind": "education_no_tools",
-            })
+            # Only skip tools if the query is purely conceptual/explanatory.
+            # If the user says "fetch", "calculate", "pull", "get", "show me" — they need live data.
+            fetch_verbs = re.search(
+                r"\b(fetch|pull|get|show|calculate|compute|find|retrieve|check|run|analyze|analyse)\b",
+                normalized_text,
+            )
+            if not fetch_verbs:
+                plan.update({
+                    "tool_mode": "none",
+                    "model_name": settings.VERTEX_AI_MODEL_NAME,
+                    "fast_path_kind": "education_no_tools",
+                })
+            else:
+                logger.info(
+                    "[MarketAgent] 🔧 education_no_tools BLOCKED by fetch verb '%s' — forcing full tool mode",
+                    fetch_verbs.group(0),
+                )
 
         logger.info(
             "[MarketAgent] Execution plan resolved | sub_intent=%s control=%s tool_mode=%s model=%s fast_path=%s freshness_requested=%s freshness_negated=%s requires_freshness=%s",
@@ -133,7 +145,10 @@ class MarketAgent(BaseAgent):
             + " 2. TICKER VALIDATION: If search_ticker returns no matches or an error, you MUST inform the user that the ticker/company was not found. NEVER substitute a different company or use a 'sector representative'. Be honest about data availability.\n"
             + " 3. AGENT-TO-AGENT (A2A) COLLABORATION: Before providing trading advice, order staging, or confirming a position size, you MUST internally consult the 'risk' agent using your `consult_specialist_agent` tool. This ensures desk limits are securely verified within the Privacy Vault.\n"
             + " 4. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
-            + " 5. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity."
+            + " 5. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity.\n"
+            + " 6. ANTI-HALLUCINATION: NEVER fabricate, invent, or estimate specific financial numbers (prices, yields, rates, volumes, EPS, P/E ratios) without tool data. If tools are not available and the user asks for specific numbers, explicitly state: 'I do not have live data for this — please use the fetch tools or provide the data.' Do NOT make up plausible-looking tables or figures.\n"
+            + " 7. SENTIMENT REQUESTS: If the user asks for 'FinBERT sentiment', 'news sentiment', or 'latest news' for ANY instrument — you MUST call `get_market_news` with the appropriate ticker. Do NOT skip this step or claim you cannot do it. The tool handles FinBERT automatically.\n"
+            + " 8. RISK AGENT: If the user says 'consult risk agent', 'check desk limit', or 'does this breach' — you MUST call `consult_specialist_agent` with target_agent='risk'. Do NOT skip this step.\n"
         )
 
         if sub_intent == "education":
@@ -143,6 +158,7 @@ class MarketAgent(BaseAgent):
                 + " Do not jump straight into one-company ticker analysis unless the user explicitly asked for a stock."
                 + " Prefer clear explanatory sections such as [Direct Answer], [How It Works], [Why It Matters], [Optional Follow-up]."
                 + " Avoid forced trade implication language for pure educational questions."
+                + " CRITICAL: If the user asks to 'fetch', 'calculate from', or 'get' specific data — state clearly that live data tools are not available in this mode and ask them to rephrase with 'current' or 'latest' to trigger live data fetching."
             )
 
         if sub_intent == "technical_indicator":

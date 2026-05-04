@@ -35,25 +35,38 @@ async def _fetch_av(params: Dict[str, Any]) -> Dict[str, Any]:
     
     request_params = dict(params)
     request_params["apikey"] = api_key
+    fn = params.get("function", "UNKNOWN")
+    symbol = params.get("symbol") or params.get("from_currency") or params.get("from_symbol") or ""
 
     try:
+        t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(BASE_URL, params=request_params)
             response.raise_for_status()
             data = response.json()
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
 
             # Check for API-level errors
             if "Error Message" in data:
-                return {
-                    "error": data["Error Message"]
-                }
+                logger.warning(
+                    "[AV] ❌ API error | fn=%s symbol=%s elapsed_ms=%s | %s",
+                    fn, symbol, elapsed_ms, data["Error Message"]
+                )
+                return {"error": data["Error Message"]}
             if "Note" in data:
-                return {
-                    "error": "API rate limit reached (Notice from Alpha Vantage)"
-                }
+                logger.warning(
+                    "[AV] ⚠️ Rate limit hit | fn=%s symbol=%s elapsed_ms=%s",
+                    fn, symbol, elapsed_ms
+                )
+                return {"error": "API rate limit reached (Notice from Alpha Vantage)"}
+
+            logger.info(
+                "[AV] ✅ Success | fn=%s symbol=%s elapsed_ms=%s | keys=%s",
+                fn, symbol, elapsed_ms, list(data.keys())[:4]
+            )
             return data
     except Exception as exc:
-        logger.error(f"Alpha Vantage fetch failed: {exc}")
+        logger.error("[AV] ❌ HTTP fetch failed | fn=%s symbol=%s | %s", fn, symbol, exc)
         return {"error": str(exc)}
 
 
@@ -585,10 +598,27 @@ async def get_crypto_daily_series(
         "data": [
             {
                 "date": date,
-                "open": time_series[date].get(f"1a. open ({market.upper()})") or time_series[date].get("1a. open (USD)"),
-                "high": time_series[date].get(f"2a. high ({market.upper()})") or time_series[date].get("2a. high (USD)"),
-                "low": time_series[date].get(f"3a. low ({market.upper()})") or time_series[date].get("3a. low (USD)"),
-                "close": time_series[date].get(f"4a. close ({market.upper()})") or time_series[date].get("4a. close (USD)"),
+                # Alpha Vantage crypto format changed — try both old and new key formats
+                "open": (
+                    time_series[date].get("1. open")
+                    or time_series[date].get(f"1a. open ({market.upper()})")
+                    or time_series[date].get("1a. open (USD)")
+                ),
+                "high": (
+                    time_series[date].get("2. high")
+                    or time_series[date].get(f"2a. high ({market.upper()})")
+                    or time_series[date].get("2a. high (USD)")
+                ),
+                "low": (
+                    time_series[date].get("3. low")
+                    or time_series[date].get(f"3a. low ({market.upper()})")
+                    or time_series[date].get("3a. low (USD)")
+                ),
+                "close": (
+                    time_series[date].get("4. close")
+                    or time_series[date].get(f"4a. close ({market.upper()})")
+                    or time_series[date].get("4a. close (USD)")
+                ),
                 "volume": time_series[date].get("5. volume"),
                 "market_cap": time_series[date].get("6. market cap (USD)"),
             }
@@ -690,6 +720,11 @@ async def get_market_news(
     # Extract titles for efficient batch processing
     titles = [item.get("title", "") for item in feed]
     analytics_status = "SUCCESS"
+    
+    logger.info(
+        "[MCP:get_market_news] 📰 Fetched %s articles | tickers=%s topics=%s | sending to FinBERT...",
+        len(feed), tickers, topics
+    )
     
     try:
         # Run through our professional ML model

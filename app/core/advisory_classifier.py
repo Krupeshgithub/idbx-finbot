@@ -55,18 +55,8 @@ class AdvisoryIntentClassifier:
     ) -> Dict[str, Any]:
         """
         Detect advisory intent in user query.
-        
-        Args:
-            text: User query text
-            conversation_id: Optional conversation ID for caching
-        
-        Returns:
-            {
-                "is_advisory": bool,
-                "confidence": float,
-                "patterns_matched": List[str],
-                "reason": str
-            }
+        Fast path: pattern matching first (zero LLM cost).
+        Slow path: LLM only for short/ambiguous queries with no pattern match.
         """
         if not text or not text.strip():
             return {
@@ -75,7 +65,38 @@ class AdvisoryIntentClassifier:
                 "patterns_matched": [],
                 "reason": "Empty query"
             }
-        
+
+        # ── Fast-reject: clearly non-advisory operational queries ──────────
+        # These are always data/calculation requests — skip LLM entirely.
+        NON_ADVISORY_PREFIXES = (
+            "fetch ", "get ", "pull ", "show ", "calculate ", "compute ",
+            "what is the ", "what are the ", "stage ", "rfq ",
+        )
+        NON_ADVISORY_KEYWORDS = {
+            "rsi", "macd", "sma", "ema", "bbands", "bollinger",
+            "price", "quote", "daily series", "historical",
+            "dv01", "pv01", "var ", "volatility", "sharpe",
+            "exchange rate", "federal funds", "cpi", "gdp",
+            "earnings", "income statement", "balance sheet",
+            "news", "sentiment", "finbert",
+        }
+        lowered = text.strip().lower()
+        if any(lowered.startswith(p) for p in NON_ADVISORY_PREFIXES):
+            return {
+                "is_advisory": False,
+                "confidence": 0.0,
+                "patterns_matched": [],
+                "reason": "Non-advisory operational query (fast-reject by prefix)"
+            }
+        if any(k in lowered for k in NON_ADVISORY_KEYWORDS) and len(lowered.split()) > 8:
+            # Long queries with data keywords are almost never advisory
+            return {
+                "is_advisory": False,
+                "confidence": 0.0,
+                "patterns_matched": [],
+                "reason": "Non-advisory data/calculation query (fast-reject by keyword)"
+            }
+
         # Check cache first
         if conversation_id:
             cache_key = f"advisory:{conversation_id}:{hash(text)}"
@@ -87,7 +108,7 @@ class AdvisoryIntentClassifier:
                 )
                 return cached_result
         
-        # Pattern-based detection (fast path)
+        # Pattern-based detection (fast path — zero LLM cost)
         patterns_matched = self._match_advisory_patterns(text)
         if patterns_matched:
             result = {
@@ -96,10 +117,8 @@ class AdvisoryIntentClassifier:
                 "patterns_matched": patterns_matched,
                 "reason": "Explicit advisory patterns detected"
             }
-            
             if conversation_id:
                 self._put_in_cache(cache_key, result)
-            
             logger.warning(
                 "[AdvisoryClassifier] Advisory intent detected | patterns=%s | text=%s",
                 patterns_matched,
@@ -107,7 +126,20 @@ class AdvisoryIntentClassifier:
             )
             return result
         
-        # LLM-based detection (for subtle cases)
+        # LLM-based detection ONLY for short/ambiguous queries
+        # Skip LLM for long queries (>15 words) — they're almost always data requests
+        word_count = len(text.strip().split())
+        if word_count > 15:
+            result = {
+                "is_advisory": False,
+                "confidence": 0.1,
+                "patterns_matched": [],
+                "reason": "Long query without advisory patterns — skipping LLM (cost optimization)"
+            }
+            if conversation_id:
+                self._put_in_cache(cache_key, result)
+            return result
+
         llm_result = self._llm_detect_advisory(text)
         
         result = {

@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-2.5-flash"
     VERTEX_AI_API_VERSION: str = "v1"
     VERTEX_AI_TEMPERATURE: float = 0.2
-    VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192
+    VERTEX_AI_MAX_OUTPUT_TOKENS: int = 16384
     VERTEX_AI_MAX_WORKERS: int = 12
     VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 12
     VERTEX_AI_REQUEST_TIMEOUT_SECONDS: int = 120  # 2 minutes timeout for Gemini API calls
@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     DB_STATEMENT_TIMEOUT_MS: int = 5000  # Increase from 2500 to 5000
     DB_PUBLIC_SCHEMA: str = "public"
     DB_AIDAAN_SCHEMA: str = "aidaan"
-    AIDAAN_HISTORY_WINDOW: int = 10  # Maximum conversation history messages to load
+    AIDAAN_HISTORY_WINDOW: int = 20  # Maximum conversation history messages to load (10 Q+A pairs = 20 rows)
     AIDAAN_MAX_TOOL_INVOCATIONS: int = 10  # Maximum tool invocations to load
     AIDAAN_MAX_RFQ_DRAFTS: int = 5  # Maximum RFQ drafts to load
     AIDAAN_MAX_AUDIT_EVENTS: int = 5  # Maximum audit events to load

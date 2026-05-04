@@ -81,6 +81,11 @@ class DLPClient:
                         {"name": "US_SOCIAL_SECURITY_NUMBER"},
                         {"name": "IP_ADDRESS"},
                         {"name": "DATE_OF_BIRTH"},
+                        {"name": "INDIA_PAN_INDIVIDUAL"},
+                        {"name": "INDIA_AADHAAR_INDIVIDUAL"},
+                        {"name": "FINANCIAL_ACCOUNT_NUMBER"},
+                        {"name": "IBAN_CODE"},
+                        {"name": "PERSON_NAME"},
                     ]
                 }
 
@@ -122,12 +127,27 @@ class DLPClient:
                 request["deidentify_config"] = deidentify_config
 
             response = self.client.deidentify_content(request=request)
-            return response.item.value
+            redacted = response.item.value
+
+            # Debug: log what changed so we can verify DLP is working
+            if redacted != text:
+                import re
+                # Count masked characters to show redaction extent
+                original_len = len(text)
+                redacted_len = len(redacted)
+                stars = redacted.count("*")
+                logger.info(
+                    "[DLPClient] ✅ PII REDACTED | original_len=%s redacted_len=%s stars_inserted=%s | preview_redacted=%s",
+                    original_len, redacted_len, stars,
+                    redacted[:120]
+                )
+            else:
+                logger.debug("[DLPClient] No PII detected in input (len=%s)", len(text))
+
+            return redacted
     
         except Exception as exc:
-            # Fallback to local regex redaction for basic PII if GCP fails? 
-            # For now, just log and return original to avoid breaking the bot.
-            logger.error("[DLPClient] Redaction failed: %s", exc)
+            logger.error("[DLPClient] ❌ Redaction failed: %s", exc)
             return text
 
 dlp_client = DLPClient()

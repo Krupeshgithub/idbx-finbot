@@ -288,7 +288,7 @@ async def get_intraday_series(
             "error": f"No intraday data found for interval={interval}"
         }
     
-    sorted_ts = sorted(time_series.keys(), reverse=True)[: max(1, min(points, 200))]
+    sorted_ts = sorted([str(k) for k in time_series.keys()], reverse=True)[: max(1, min(points, 200))]
     return {
         "symbol": symbol.upper(),
         "interval": interval,
@@ -533,7 +533,7 @@ async def get_fx_intraday_series(
             "error": f"No FX intraday data found for interval={interval}"
         }
     
-    sorted_ts = sorted(time_series.keys(), reverse=True)[: max(1, min(points, 200))]
+    sorted_ts = sorted([str(k) for k in time_series.keys()], reverse=True)[: max(1, min(points, 200))]
     return {
         "pair": f"{from_symbol.upper()}/{to_symbol.upper()}",
         "interval": interval,

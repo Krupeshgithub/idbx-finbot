@@ -181,8 +181,15 @@ class PublicReadRepository:
         """
         Highly Integrated AI: Uses Cloud SQL Vertex AI to reason about a user's 
         profile directly inside the database.
+        
+        Falls back to a safe default if Vertex AI permissions are not available.
         """
+        import logging
         from sqlalchemy import text
+        from sqlalchemy.exc import DatabaseError
+        
+        logger = logging.getLogger(__name__)
+        
         user = self.get_user_profile(session, user_id)
         if not user:
             return "User not found."
@@ -207,17 +214,62 @@ class PublicReadRepository:
             )
         """)
         
-        result = session.execute(stmt, {"user_json": json.dumps(user)}).scalar()
         try:
-            return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "No summary available.")
-        except (AttributeError, IndexError):
-            return "Unable to generate AI summary."
+            result = session.execute(stmt, {"user_json": json.dumps(user)}).scalar()
+            try:
+                return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "No summary available.")
+            except (AttributeError, IndexError):
+                return "Unable to generate AI summary."
+        except DatabaseError as e:
+            # Handle Vertex AI permission errors gracefully
+            error_msg = str(e)
+            if "PERMISSION_DENIED" in error_msg or "aiplatform.endpoints.predict" in error_msg:
+                logger.warning(
+                    "[VertexAI] Permission denied for Vertex AI predictions. "
+                    "Ensure service account has 'aiplatform.endpoints.predict' permission. "
+                    "User ID: %s | Error: %s",
+                    user_id,
+                    error_msg[:200]
+                )
+                # Return a safe fallback summary based on available user data
+                return self._generate_fallback_user_summary(user)
+            else:
+                # Re-raise other database errors
+                logger.error("[VertexAI] Unexpected database error: %s", error_msg)
+                raise
+    
+    def _generate_fallback_user_summary(self, user: dict) -> str:
+        """
+        Generate a simple fallback summary when Vertex AI is unavailable.
+        Uses only the user profile data without AI.
+        """
+        full_name = user.get("full_name", "Unknown Trader")
+        risk_tier = user.get("risk_tier", "N/A")
+        status = user.get("status", "Unknown")
+        
+        # Build a simple, professional summary
+        summary_parts = [full_name]
+        
+        if risk_tier and risk_tier != "N/A":
+            summary_parts.append(f"(Risk Tier {risk_tier})")
+        
+        if status and status.upper() != "ACTIVE":
+            summary_parts.append(f"- Status: {status}")
+        
+        return " ".join(summary_parts) + " - AI summary unavailable."
 
     def generate_ai_desk_summary(self, session: Session, desk_id: str) -> str:
         """
         AI Reasoning for Desk: Summarizes desk limits and activity directly in SQL.
+        
+        Falls back to a safe default if Vertex AI permissions are not available.
         """
+        import logging
         from sqlalchemy import text
+        from sqlalchemy.exc import DatabaseError
+        
+        logger = logging.getLogger(__name__)
+        
         limits = self.get_desk_limits(session, desk_id)
         
         stmt = text("""
@@ -238,11 +290,46 @@ class PublicReadRepository:
             )
         """)
         
-        result = session.execute(stmt, {"limits_json": json.dumps(limits[:5])}).scalar()
         try:
-            return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "Desk capacity analysis unavailable.")
-        except (AttributeError, IndexError):
-            return "Unable to analyze desk capacity."
+            result = session.execute(stmt, {"limits_json": json.dumps(limits[:5])}).scalar()
+            try:
+                return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "Desk capacity analysis unavailable.")
+            except (AttributeError, IndexError):
+                return "Unable to analyze desk capacity."
+        except DatabaseError as e:
+            # Handle Vertex AI permission errors gracefully
+            error_msg = str(e)
+            if "PERMISSION_DENIED" in error_msg or "aiplatform.endpoints.predict" in error_msg:
+                logger.warning(
+                    "[VertexAI] Permission denied for Vertex AI predictions. "
+                    "Ensure service account has 'aiplatform.endpoints.predict' permission. "
+                    "Desk ID: %s | Error: %s",
+                    desk_id,
+                    error_msg[:200]
+                )
+                # Return a safe fallback summary based on available desk limit data
+                return self._generate_fallback_desk_summary(limits)
+            else:
+                # Re-raise other database errors
+                logger.error("[VertexAI] Unexpected database error: %s", error_msg)
+                raise
+    
+    def _generate_fallback_desk_summary(self, limits: list) -> str:
+        """
+        Generate a simple fallback summary when Vertex AI is unavailable.
+        Uses only the desk limit data without AI.
+        """
+        if not limits:
+            return "No desk limits configured - AI summary unavailable."
+        
+        # Count limits by type
+        limit_types = {}
+        for limit in limits[:5]:
+            limit_type = limit.get("limit_type", "notional").lower()
+            limit_types[limit_type] = limit_types.get(limit_type, 0) + 1
+        
+        type_summary = ", ".join([f"{count} {ltype}" for ltype, count in limit_types.items()])
+        return f"Desk has {len(limits)} active limits ({type_summary}) - AI analysis unavailable."
 
     def get_operational_snapshot(self, session: Session, identity: str) -> Dict[str, Any]:
         user = self.get_user_profile(session, identity)

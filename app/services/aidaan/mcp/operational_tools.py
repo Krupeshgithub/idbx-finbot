@@ -24,6 +24,25 @@ async def get_user_profile(identity: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
+async def validate_user_session(identity: str) -> Dict[str, Any]:
+    """
+    Validate a frontend user id against public.users and return the stable
+    aidaan conversation id used for traceable sidecar writes.
+    """
+    result = operational_data_service.validate_user_session(identity)
+    return {
+        "allowed": result["allowed"],
+        "reason": result["reason"],
+        "identity": result["identity"],
+        "canonical_user_id": result["user_id"],
+        "desk_id": result["desk_id"],
+        "conversation_id": result["conversation_id"],
+        "source_schema": operational_data_service.public.schema,
+        "storage_schema": operational_data_service.aidaan.schema,
+    }
+
+
+@mcp.tool()
 async def get_desk_context(identity: str) -> Dict[str, Any]:
     """
     Return desk membership, limits, and counterparties for a trader identity.

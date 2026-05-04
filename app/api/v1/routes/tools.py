@@ -2,9 +2,9 @@
 AIDAAN Tool Invocation Routes.
 Handles the formal execution of actions drafted by agents.
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 
-from app.db.repositories import ANONYMOUS_IDENTITIES
+from app.db.operational.service import operational_data_service
 from app.core.llm_client import llm_client
 from app.schemas.aidaan import (
     ToolInvokeRequest,
@@ -29,11 +29,15 @@ async def invoke_tool(payload: ToolInvokeRequest):
     # Hardcoded safety check: Log the intent and return success with draft details
     # In Phase 2, this will connect to the MCP executor.
     
-    resolved_username = (
-        None
-        if not payload.user_id or payload.user_id.strip().lower() in ANONYMOUS_IDENTITIES
-        else payload.user_id
-    )
+    user_session = operational_data_service.validate_user_session(payload.user_id)
+    if not user_session["allowed"]:
+        persistence_service.persist_login_event(payload.user_id, success=False)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=user_session["reason"],
+        )
+    resolved_username = payload.user_id
+    payload.arguments.setdefault("conversation_id", user_session["conversation_id"])
 
     try:
         kill_switch_service.assert_tool_allowed(

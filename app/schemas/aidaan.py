@@ -48,6 +48,31 @@ class AidaanMessageResponse(BaseModel):
     latency_ms: float = 0.0
 
 
+class UserValidationRequest(BaseModel):
+    """
+    Frontend user-id validation payload.
+    """
+    user_id: str
+
+
+class UserValidationResponse(BaseModel):
+    """
+    Public user validation result for login/session gating.
+    """
+    valid: bool
+    reason: str
+    user_id: Optional[str] = None
+    trader_id: Optional[str] = None
+    full_name: Optional[str] = None
+    risk_tier: Optional[str] = None
+    status: Optional[str] = None
+    desk: Optional[str] = None
+    desk_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    source_schema: str = "public"
+    storage_schema: str = "aidaan"
+
+
 class ToolInvokeRequest(BaseModel):
     """
     Request payload for explicit tool execution.

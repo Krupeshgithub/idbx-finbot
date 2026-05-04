@@ -19,11 +19,30 @@ class PublicReadRepository:
 
     def get_user_by_identity(self, session: Session, identity: str) -> Optional[Dict[str, Any]]:
         users = registry.table(session, schema=self.schema, name="users")
-        filters = [users.c.trader_id == identity]
-        try:
-            filters.append(users.c.id == UUID(str(identity)))
-        except (ValueError, TypeError):
-            pass
+        normalized_identity = str(identity or "").strip()
+        if not normalized_identity:
+            return None
+
+        filters = []
+        for column_name in ("trader_id", "username", "user_name", "email"):
+            if column_name in users.c:
+                filters.append(users.c[column_name] == normalized_identity)
+
+        if "id" in users.c:
+            id_column = users.c.id
+            try:
+                id_python_type = id_column.type.python_type
+            except (AttributeError, NotImplementedError):
+                id_python_type = None
+
+            try:
+                filters.append(id_column == UUID(normalized_identity))
+            except (ValueError, TypeError):
+                if id_python_type is not UUID:
+                    filters.append(id_column == normalized_identity)
+
+        if not filters:
+            return None
 
         query = select(users).where(or_(*filters))
         row = session.execute(query).first()

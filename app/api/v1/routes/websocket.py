@@ -8,7 +8,7 @@ import logging
 
 from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
 from app.services.persistence import persistence_service
-from app.db.repositories import ANONYMOUS_IDENTITIES
+from app.db.operational.service import operational_data_service
 from fastapi import (
     APIRouter, 
     WebSocket, 
@@ -70,11 +70,30 @@ async def aidaan_websocket(websocket: WebSocket):
             conv_id = message.get("conversation_id")
             user_id = message.get(
                 "user_id",
-                "anonymous-trader"
+                ""
             )
+            user_session = operational_data_service.validate_user_session(user_id)
+            if not user_session["allowed"]:
+                persistence_service.persist_login_event(str(user_id or ""), success=False)
+                await safe_send_json({
+                    "type": "error",
+                    "message": user_session["reason"],
+                    "code": "invalid_user_id",
+                })
+                await websocket.close(code=1008, reason=user_session["reason"])
+                connection_open = False
+                break
+
             context = dict(message.get("context", {}) or {})
-            if str(user_id).strip().lower() not in ANONYMOUS_IDENTITIES:
-                context.setdefault("username", user_id)
+            context.update(
+                {
+                    "username": user_id,
+                    "canonical_user_id": user_session["user_id"],
+                    "desk_id": user_session["desk_id"],
+                    "frontend_conversation_id": conv_id,
+                }
+            )
+            conv_id = user_session["conversation_id"]
 
             # Proximity signals drive the Awakening/Dormant states client-side.
             if msg_type == "proximity":
@@ -141,7 +160,7 @@ async def aidaan_websocket(websocket: WebSocket):
                     )
                     persistence_service.persist_message_exchange(
                         conversation_id=response.conversation_id,
-                        username=None if str(user_id).strip().lower() in ANONYMOUS_IDENTITIES else user_id,
+                        username=user_id,
                         user_text=user_text,
                         response_payload=response.model_dump(),
                         channel="websocket",

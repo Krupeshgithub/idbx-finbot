@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import time
 import random
+from uuid import UUID
 from typing import Any, Callable, Dict, Iterable, Optional, TypeVar
 from functools import lru_cache
 
@@ -276,6 +277,79 @@ class OperationalDataService:
             return {
                 "user_id": str(user["id"]),
                 "desk_id": str(membership["desk_id"]) if membership else None,
+            }
+
+    @staticmethod
+    def _stable_conversation_id(user_id: str) -> str:
+        """
+        One durable chat thread per canonical public user id.
+        """
+        try:
+            return f"conv-user-{UUID(str(user_id)).hex}"
+        except (ValueError, TypeError):
+            safe = "".join(ch for ch in str(user_id).lower() if ch.isalnum())
+            return f"conv-user-{safe[:40]}"
+
+    @staticmethod
+    def _is_user_active(user: Dict[str, Any]) -> bool:
+        status = user.get("status")
+        if isinstance(status, str) and status.strip().lower() in {"disabled", "inactive", "blocked", "suspended"}:
+            return False
+        active_value = user.get("is_active", user.get("active", user.get("enabled", True)))
+        if isinstance(active_value, str):
+            return active_value.strip().lower() in {"active", "enabled", "true", "1", "yes"}
+        return bool(active_value)
+
+    def validate_user_session(self, identity: Optional[str]) -> Dict[str, Any]:
+        """
+        Validate a frontend identity against public.users and return the canonical
+        aidaan trace identifiers. Does not write to the public schema.
+        """
+        raw_identity = str(identity or "").strip()
+        if not raw_identity:
+            return {
+                "allowed": False,
+                "reason": "user_id is required",
+                "identity": raw_identity,
+                "user_id": None,
+                "desk_id": None,
+                "conversation_id": None,
+                "user": None,
+            }
+
+        with get_db_session() as session:
+            user = self.public.get_user_by_identity(session, raw_identity)
+            if not user:
+                return {
+                    "allowed": False,
+                    "reason": "user_id not found in public.users",
+                    "identity": raw_identity,
+                    "user_id": None,
+                    "desk_id": None,
+                    "conversation_id": None,
+                    "user": None,
+                }
+            if not self._is_user_active(user):
+                return {
+                    "allowed": False,
+                    "reason": "user_id is inactive in public.users",
+                    "identity": raw_identity,
+                    "user_id": str(user.get("id")),
+                    "desk_id": None,
+                    "conversation_id": None,
+                    "user": user,
+                }
+
+            membership = self.public.get_primary_membership(session, str(user["id"]))
+            canonical_user_id = str(user["id"])
+            return {
+                "allowed": True,
+                "reason": "ok",
+                "identity": raw_identity,
+                "user_id": canonical_user_id,
+                "desk_id": str(membership["desk_id"]) if membership else None,
+                "conversation_id": self._stable_conversation_id(canonical_user_id),
+                "user": user,
             }
 
     def get_operational_snapshot(self, identity: Optional[str]) -> Dict[str, Any]:

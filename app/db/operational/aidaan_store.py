@@ -176,6 +176,7 @@ class AidaanStoreRepository:
         the Cloud SQL Vertex AI integration.
         """
         from sqlalchemy import text
+        import json
         
         # We use a raw insert to leverage the database-side embedding function
         # This is more efficient than calculating embeddings in Python.
@@ -195,7 +196,7 @@ class AidaanStoreRepository:
             "content": content,
             "agent_name": agent_name,
             "model_name": model_name,
-            "metadata_json": metadata or {},
+            "metadata_json": json.dumps(metadata or {}),
             "created_at": datetime.utcnow(),
         }
         

@@ -98,13 +98,24 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: float = 5.0  # Increase from 2.0 to 5.0
     DB_POOL_RECYCLE_SECONDS: int = 3600  # Increase from 60 to 3600
     DB_CONNECT_TIMEOUT_SECONDS: int = 10  # Increase from 3 to 10
-    DB_STATEMENT_TIMEOUT_MS: int = 5000  # Increase from 2500 to 5000
+    DB_STATEMENT_TIMEOUT_MS: int = 30000  # Increase from 5000 to 30000 (30 seconds)
     DB_PUBLIC_SCHEMA: str = "public"
     DB_AIDAAN_SCHEMA: str = "aidaan"
+    
+    # --- AIDAAN Context & History Configuration ---
     AIDAAN_HISTORY_WINDOW: int = 20  # Maximum conversation history messages to load (10 Q+A pairs = 20 rows)
+    AIDAAN_SEMANTIC_LIMIT: int = 10  # Number of semantic search results (increased from 5)
+    AIDAAN_SEMANTIC_THRESHOLD: float = 0.7  # Minimum similarity score for semantic results (0.0-1.0)
     AIDAAN_MAX_TOOL_INVOCATIONS: int = 10  # Maximum tool invocations to load
     AIDAAN_MAX_RFQ_DRAFTS: int = 5  # Maximum RFQ drafts to load
     AIDAAN_MAX_AUDIT_EVENTS: int = 5  # Maximum audit events to load
+    
+    # --- Cache Configuration ---
+    CONTEXT_CACHE_TTL_SECONDS: int = 300  # Context cache time-to-live (5 minutes)
+    CACHE_MAX_SIZE: int = 500  # Maximum number of cache entries (increased from 200)
+    
+    # --- Performance Monitoring ---
+    SLOW_QUERY_THRESHOLD_MS: int = 1000  # Threshold for slow query warnings (1 second)
     ALLOYDB_ENABLED: bool = False
     ALLOYDB_USE_AUTH_PROXY: bool = False
     ALLOYDB_HOST: str = "127.0.0.1"

@@ -208,47 +208,62 @@ class AidaanStoreRepository:
         session: Session, 
         conversation_id: str, 
         query_text: str, 
-        limit: int = 5
+        limit: int = None,
+        similarity_threshold: float = None
     ) -> List[Dict[str, Any]]:
         """
         Search for past messages that are semantically similar to the current query.
-        Uses cosine similarity on the content_vector column.
+        Uses cosine similarity on the content_vector column with configurable threshold.
         
-        OPTIMIZATION: Cache query embedding to avoid recomputation.
+        OPTIMIZATION: Filter by similarity threshold in SQL for better performance.
         """
         from sqlalchemy import text
         import time
         
+        # Use config defaults if not specified
+        if limit is None:
+            limit = settings.AIDAAN_SEMANTIC_LIMIT
+        if similarity_threshold is None:
+            similarity_threshold = settings.AIDAAN_SEMANTIC_THRESHOLD
+        
         start_time = time.monotonic()
         
         # The <=> operator is for cosine distance in pgvector
-        # OPTIMIZATION: Pre-compute query embedding once, reuse in ORDER BY and SELECT
+        # Filter by similarity threshold in SQL for better performance
         stmt = text(f"""
             WITH query_embedding AS (
                 SELECT aidaan.get_embedding(:query) as query_vec
+            ),
+            ranked_messages AS (
+                SELECT 
+                    id, role, content, agent_name, created_at,
+                    (1 - (content_vector <=> query_embedding.query_vec)) as similarity
+                FROM {self.schema}.messages, query_embedding
+                WHERE conversation_id = :conv_id
+                AND content_vector IS NOT NULL
+                AND (1 - (content_vector <=> query_embedding.query_vec)) >= :threshold
+                ORDER BY content_vector <=> query_embedding.query_vec
+                LIMIT :limit
             )
-            SELECT id, role, content, agent_name, created_at,
-                   (1 - (content_vector <=> query_embedding.query_vec)) as similarity
-            FROM {self.schema}.messages, query_embedding
-            WHERE conversation_id = :conv_id
-            AND content_vector IS NOT NULL
-            ORDER BY content_vector <=> query_embedding.query_vec
-            LIMIT :limit
+            SELECT * FROM ranked_messages
+            ORDER BY created_at ASC
         """)
         
         params = {
             "query": query_text,
             "conv_id": conversation_id,
-            "limit": limit
+            "limit": limit,
+            "threshold": similarity_threshold
         }
         
         result = [dict(row) for row in session.execute(stmt, params).mappings().all()]
         elapsed_ms = (time.monotonic() - start_time) * 1000
         
-        # TEST LOGGING
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"[TEST] Semantic history: results={len(result)} | latency_ms={elapsed_ms:.1f} | optimization=query_embedding_cached")
+        # Enhanced logging
+        logger.info(
+            f"[TEST] Semantic history: results={len(result)} | latency_ms={elapsed_ms:.1f} | "
+            f"threshold={similarity_threshold} | limit={limit} | optimization=threshold_filtered"
+        )
         
         return result
 
@@ -405,3 +420,35 @@ class AidaanStoreRepository:
                 "audit_events",
             ]
         }
+
+    def resolve_ticker_alias(self, session: Session, alias: str) -> Optional[str]:
+        """
+        Database-driven ticker resolution. No hardcoding.
+        Resolves company names and aliases to ticker symbols.
+        
+        Args:
+            session: Database session
+            alias: Company name or alias (e.g., "google", "apple")
+        
+        Returns:
+            Ticker symbol (e.g., "GOOGL", "AAPL") or None if not found
+        """
+        from sqlalchemy import text
+        
+        stmt = text(f"""
+            SELECT ticker 
+            FROM {self.schema}.ticker_aliases 
+            WHERE LOWER(alias) = LOWER(:alias)
+            AND is_active = TRUE
+            ORDER BY priority ASC
+            LIMIT 1
+        """)
+        
+        result = session.execute(stmt, {"alias": alias}).scalar_one_or_none()
+        
+        if result:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[TickerResolver] '{alias}' -> {result} (from database)")
+        
+        return result

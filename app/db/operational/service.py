@@ -27,10 +27,10 @@ class OperationalDataService:
         self.public = PublicReadRepository()
         self.aidaan = AidaanStoreRepository()
         
-        # Phase 2 Optimization: Query result caching
+        # Phase 2 Optimization: Query result caching (config-driven)
         self._cache: Dict[str, tuple[Any, float]] = {}
-        self._cache_ttl = 300  # 5 minutes for active conversations
-        self._cache_max_size = 200  # Maximum cache entries
+        self._cache_ttl = settings.CONTEXT_CACHE_TTL_SECONDS  # From config
+        self._cache_max_size = settings.CACHE_MAX_SIZE  # From config
 
     @staticmethod
     def _normalize_instrument(value: Optional[str]) -> str:
@@ -226,6 +226,7 @@ class OperationalDataService:
     ) -> T:
         """
         Execute a database operation with retries on OperationalError.
+        Enhanced with slow query detection.
         """
         last_exc = None
         for attempt in range(max_retries):
@@ -234,6 +235,14 @@ class OperationalDataService:
                 result = operation()
                 db_elapsed = (time.monotonic() - db_start) * 1000
                 logger.info(f"[TIMING] DB operation | label={label} | elapsed={db_elapsed:.1f}ms | attempt={attempt+1}")
+                
+                # Warn on slow queries (configurable threshold)
+                if db_elapsed > settings.SLOW_QUERY_THRESHOLD_MS:
+                    logger.warning(
+                        f"[PERF] SLOW QUERY | {label} | elapsed={db_elapsed:.1f}ms | "
+                        f"threshold={settings.SLOW_QUERY_THRESHOLD_MS}ms"
+                    )
+                
                 return result
             except OperationalError as exc:
                 last_exc = exc
@@ -406,7 +415,8 @@ class OperationalDataService:
         conversation_id: Optional[str], 
         query_text: str, 
         temporal_limit: int = 10, 
-        semantic_limit: int = 5
+        semantic_limit: int = None,  # Use config default
+        similarity_threshold: float = None  # Use config default
     ) -> list[dict[str, Any]]:
         """
         The 'Gold Standard' for history retrieval:
@@ -418,6 +428,12 @@ class OperationalDataService:
         """
         if not conversation_id:
             return []
+        
+        # Use config defaults if not specified
+        if semantic_limit is None:
+            semantic_limit = settings.AIDAAN_SEMANTIC_LIMIT
+        if similarity_threshold is None:
+            similarity_threshold = settings.AIDAAN_SEMANTIC_THRESHOLD
 
         def _fetch():
             with get_db_session() as session:
@@ -437,7 +453,8 @@ class OperationalDataService:
                         session, 
                         conversation_id, 
                         query_text, 
-                        limit=semantic_limit
+                        limit=semantic_limit,
+                        similarity_threshold=similarity_threshold
                     )
                     
                     # Merge and de-duplicate by ID
@@ -446,6 +463,7 @@ class OperationalDataService:
                     for msg in semantic:
                         if msg["id"] not in seen_ids:
                             msg["is_semantic_memory"] = True # Flag for the agent to know this is retrieved memory
+                            msg["similarity_score"] = msg.get("similarity", 0)
                             combined.append(msg)
                 
                 # Sort by creation time to keep the conversation logical

@@ -3,6 +3,7 @@ Read-only access layer for canonical public schema data.
 """
 from __future__ import annotations
 
+import json
 from uuid import UUID
 from typing import Any, Dict, List, Optional
 

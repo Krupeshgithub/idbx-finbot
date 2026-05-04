@@ -186,7 +186,8 @@ async def get_daily_series(
         return {"error": "No daily data found."}
 
     # Slicing the last X days for efficiency
-    sorted_dates = sorted(time_series.keys(), reverse=True)
+    # Ensure all keys are strings before sorting
+    sorted_dates = sorted([str(k) for k in time_series.keys()], reverse=True)
     target_dates = sorted_dates[:days]
 
     return {
@@ -230,7 +231,7 @@ async def get_weekly_series(
 
     time_series = raw.get("Weekly Time Series", {})
         
-    sorted_dates = sorted(time_series.keys(), reverse=True)
+    sorted_dates = sorted([str(k) for k in time_series.keys()], reverse=True)
     target_dates = sorted_dates[:weeks]
 
     return {
@@ -334,7 +335,7 @@ async def get_monthly_series(
             "error": "No monthly data found."
         }
     
-    sorted_dates = sorted(time_series.keys(), reverse=True)[: max(1, min(months, 120))]
+    sorted_dates = sorted([str(k) for k in time_series.keys()], reverse=True)[: max(1, min(months, 120))]
     return {
         "symbol": symbol.upper(),
         "last_refreshed": raw.get("Meta Data", {}).get("3. Last Refreshed"),
@@ -475,7 +476,7 @@ async def get_fx_daily_series(
     if not time_series:
         return {"error": "No FX daily data found."}
 
-    sorted_dates = sorted(time_series.keys(), reverse=True)[: max(1, min(days, 200))]
+    sorted_dates = sorted([str(k) for k in time_series.keys()], reverse=True)[: max(1, min(days, 200))]
 
     return {
         "pair": f"{from_symbol.upper()}/{to_symbol.upper()}",
@@ -588,7 +589,7 @@ async def get_crypto_daily_series(
     if not time_series:
         return {"error": "No crypto daily data found."}
 
-    sorted_dates = sorted(time_series.keys(), reverse=True)[: max(1, min(days, 200))]
+    sorted_dates = sorted([str(k) for k in time_series.keys()], reverse=True)[: max(1, min(days, 200))]
 
     # Values are usually duplicated in both base and quote currency; we return quote-currency keys when present.
     return {

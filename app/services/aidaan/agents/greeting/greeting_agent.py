@@ -105,13 +105,21 @@ class GreetingAgent(BaseAgent):
         now = datetime.datetime.now(tz)
         time_of_day = self._get_time_of_day(timezone)
         
-        greeting_context = operational_data_service.get_greeting_context(resolved_username, instrument="EUR/USD")
-        desk = greeting_context.get("desk") or {}
-        membership = greeting_context.get("desk_membership") or {}
-        selected_limit = greeting_context.get("selected_limit")
-        soft_limit = self._format_limit(selected_limit)
-        desk_name = desk.get("name")
-        desk_title = membership.get("title")
+        # Initialize defaults in case get_greeting_context fails
+        desk_name = None
+        desk_title = None
+        soft_limit = None
+        
+        try:
+            greeting_context = operational_data_service.get_greeting_context(resolved_username, instrument="EUR/USD")
+            desk = greeting_context.get("desk") or {}
+            membership = greeting_context.get("desk_membership") or {}
+            selected_limit = greeting_context.get("selected_limit")
+            soft_limit = self._format_limit(selected_limit)
+            desk_name = desk.get("name")
+            desk_title = membership.get("title")
+        except Exception as ctx_err:
+            logger.warning(f"[GreetingAgent] Failed to fetch greeting context: {str(ctx_err)}")
 
         # --- LLM Synthesis ---
         prompt = Prompts.GREETING_SYNTHESIS.format(

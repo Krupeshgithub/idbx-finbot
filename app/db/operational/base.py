@@ -7,6 +7,16 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy import MetaData, Table, desc, func, insert, select
 from sqlalchemy.orm import Session
+from sqlalchemy.types import TypeDecorator, LargeBinary
+
+
+class Vector(TypeDecorator):
+    """
+    Custom type for pgvector extension.
+    Handles the 'vector' type that SQLAlchemy doesn't recognize by default.
+    """
+    impl = LargeBinary
+    cache_ok = True
 
 
 class ReflectedTableRegistry:
@@ -23,6 +33,10 @@ class ReflectedTableRegistry:
             return self._cache[key]
 
         metadata = MetaData()
+        # Register custom types before reflection
+        metadata.info['sqlalchemy_type_map'] = {
+            'vector': Vector(),
+        }
         table = Table(name, metadata, schema=schema, autoload_with=session.get_bind())
         self._cache[key] = table
         return table

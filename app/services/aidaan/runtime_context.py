@@ -86,6 +86,13 @@ class RuntimeContextService:
             semantic_limit=settings.AIDAAN_HISTORY_WINDOW // 2,
         )
 
+    def get_recent_history(self, conversation_id: Optional[str], limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Fetch recent conversation history for a given conversation.
+        Delegates to operational_data_service.
+        """
+        return operational_data_service.get_recent_history(conversation_id, limit=limit)
+
     def _truncate_payload(self, data: Any, max_len: int = 500) -> Any:
         """
         Recursively truncate large strings or lists in a JSON-like object.

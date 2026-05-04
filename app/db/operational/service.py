@@ -426,6 +426,8 @@ class OperationalDataService:
                 
                 # OPTIMIZATION: Skip semantic search for short queries
                 query_word_count = len(query_text.strip().split())
+                logger.info(f"[TEST] Semantic search decision: word_count={query_word_count} | threshold=5 | skip={query_word_count < 5}")
+                
                 if query_word_count < 5:
                     # For short queries, just return recent messages
                     combined = list(recent)

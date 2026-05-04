@@ -217,6 +217,9 @@ class AidaanStoreRepository:
         OPTIMIZATION: Cache query embedding to avoid recomputation.
         """
         from sqlalchemy import text
+        import time
+        
+        start_time = time.monotonic()
         
         # The <=> operator is for cosine distance in pgvector
         # OPTIMIZATION: Pre-compute query embedding once, reuse in ORDER BY and SELECT
@@ -239,7 +242,15 @@ class AidaanStoreRepository:
             "limit": limit
         }
         
-        return [dict(row) for row in session.execute(stmt, params).mappings().all()]
+        result = [dict(row) for row in session.execute(stmt, params).mappings().all()]
+        elapsed_ms = (time.monotonic() - start_time) * 1000
+        
+        # TEST LOGGING
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[TEST] Semantic history: results={len(result)} | latency_ms={elapsed_ms:.1f} | optimization=query_embedding_cached")
+        
+        return result
 
     def store_rfq_draft(
         self,

@@ -215,6 +215,11 @@ class MarketAgent(BaseAgent):
         logger.info("[MarketAgent] Analyzing market query via Vertex-first orchestration: %s", text)
         market_start = time.monotonic()
         context = context or {}
+        
+        # TEST LOGGING
+        query_word_count = len(text.strip().split())
+        logger.info(f"[TEST] Query word count: {query_word_count} | text_preview={text[:60]}")
+        
         routing = context.get("routing") or {}
         sub_intent = routing.get("sub_intent", "general")
         control_signal = routing.get("control_signal", "none")

@@ -171,21 +171,68 @@ class AidaanStoreRepository:
         model_name: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return insert_row(
-            session,
-            schema=self.schema,
-            table_name="messages",
-            values={
-                "id": self._new_id(),
-                "conversation_id": conversation_id,
-                "role": role,
-                "content": content,
-                "agent_name": agent_name,
-                "model_name": model_name,
-                "metadata_json": metadata or {},
-                "created_at": datetime.utcnow(),
-            },
-        )
+        """
+        Store a message and automatically generate its embedding vector using 
+        the Cloud SQL Vertex AI integration.
+        """
+        from sqlalchemy import text
+        
+        # We use a raw insert to leverage the database-side embedding function
+        # This is more efficient than calculating embeddings in Python.
+        stmt = text(f"""
+            INSERT INTO {self.schema}.messages 
+            (id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at, content_vector)
+            VALUES 
+            (:id, :conversation_id, :role, :content, :agent_name, :model_name, :metadata_json, :created_at, 
+             aidaan.get_embedding(:content))
+            RETURNING id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at
+        """)
+        
+        params = {
+            "id": self._new_id(),
+            "conversation_id": conversation_id,
+            "role": role,
+            "content": content,
+            "agent_name": agent_name,
+            "model_name": model_name,
+            "metadata_json": metadata or {},
+            "created_at": datetime.utcnow(),
+        }
+        
+        result = session.execute(stmt, params).mappings().first()
+        return dict(result) if result else {}
+
+    def get_semantic_history(
+        self, 
+        session: Session, 
+        conversation_id: str, 
+        query_text: str, 
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for past messages that are semantically similar to the current query.
+        Uses cosine similarity on the content_vector column.
+        """
+        from sqlalchemy import text
+        
+        # The <=> operator is for cosine distance in pgvector
+        stmt = text(f"""
+            SELECT id, role, content, agent_name, created_at,
+                   (1 - (content_vector <=> aidaan.get_embedding(:query))) as similarity
+            FROM {self.schema}.messages
+            WHERE conversation_id = :conv_id
+            AND content_vector IS NOT NULL
+            ORDER BY content_vector <=> aidaan.get_embedding(:query)
+            LIMIT :limit
+        """)
+        
+        params = {
+            "query": query_text,
+            "conv_id": conversation_id,
+            "limit": limit
+        }
+        
+        return [dict(row) for row in session.execute(stmt, params).mappings().all()]
 
     def store_rfq_draft(
         self,

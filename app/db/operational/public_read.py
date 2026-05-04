@@ -127,6 +127,104 @@ class PublicReadRepository:
         query = query.order_by(table.c.created_at.desc()).limit(limit)
         return [row_to_dict(row) for row in session.execute(query).fetchall()]
 
+    def semantic_search_counterparties(
+        self,
+        session: Session,
+        *,
+        query_text: str,
+        desk_id: Optional[str] = None,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform a high-performance semantic search on counterparties.
+        Joins the READ-ONLY public table with the AI shadow table in aidaan schema.
+        """
+        from sqlalchemy import text
+        
+        # We join public.counterparties with aidaan.counterparty_embeddings
+        # This is very fast because of the HNSW index on the vector column.
+        stmt_str = f"""
+            SELECT cp.*,
+                   (1 - (ce.embedding_vector <=> aidaan.get_embedding(:query))) as similarity
+            FROM {self.schema}.counterparties cp
+            JOIN aidaan.counterparty_embeddings ce ON cp.id = ce.counterparty_id
+            WHERE 1=1
+        """
+        if desk_id:
+            stmt_str += " AND cp.desk_id = :desk_id"
+        
+        stmt_str += " ORDER BY ce.embedding_vector <=> aidaan.get_embedding(:query) LIMIT :limit"
+        
+        params = {"query": query_text, "limit": limit}
+        if desk_id:
+            params["desk_id"] = desk_id
+            
+        return [dict(row) for row in session.execute(text(stmt_str), params).mappings().all()]
+
+    def sync_counterparty_embedding(self, session: Session, counterparty_id: str, text_content: str) -> None:
+        """
+        Manually sync/index a public counterparty into the aidaan shadow table.
+        Writes to aidaan schema ONLY.
+        """
+        from sqlalchemy import text
+        stmt = text("""
+            INSERT INTO aidaan.counterparty_embeddings (counterparty_id, embedding_vector)
+            VALUES (:cp_id, aidaan.get_embedding(:text))
+            ON CONFLICT (counterparty_id) DO UPDATE 
+            SET embedding_vector = EXCLUDED.embedding_vector,
+                last_updated_at = CURRENT_TIMESTAMP
+        """)
+        session.execute(stmt, {"cp_id": counterparty_id, "text": text_content})
+
+    def generate_ai_user_summary(self, session: Session, user_id: str) -> str:
+        """
+        Highly Integrated AI: Uses Cloud SQL Vertex AI to reason about a user's 
+        profile directly inside the database.
+        """
+        from sqlalchemy import text
+        user = self.get_user_profile(session, user_id)
+        if not user:
+            return "User not found."
+
+        # We call the LLM directly via SQL to summarize the user's data
+        # This keeps our app layer thin and fast.
+        stmt = text("""
+            SELECT google_ml.invoke_model(
+                'gemini-1.5-flash', -- High-speed reasoning model
+                json_build_object(
+                    'prompt', 'Summarize this trader profile in one professional sentence: ' || :user_json
+                )
+            )
+        """)
+        
+        result = session.execute(stmt, {"user_json": json.dumps(user)}).scalar()
+        try:
+            return result.get("predictions", [{}])[0].get("content", "No summary available.")
+        except (AttributeError, IndexError):
+            return "Unable to generate AI summary."
+
+    def generate_ai_desk_summary(self, session: Session, desk_id: str) -> str:
+        """
+        AI Reasoning for Desk: Summarizes desk limits and activity directly in SQL.
+        """
+        from sqlalchemy import text
+        limits = self.get_desk_limits(session, desk_id)
+        
+        stmt = text("""
+            SELECT google_ml.invoke_model(
+                'gemini-1.5-flash',
+                json_build_object(
+                    'prompt', 'Based on these desk limits, describe the risk capacity in one concise sentence: ' || :limits_json
+                )
+            )
+        """)
+        
+        result = session.execute(stmt, {"limits_json": json.dumps(limits[:5])}).scalar()
+        try:
+            return result.get("predictions", [{}])[0].get("content", "Desk capacity analysis unavailable.")
+        except (AttributeError, IndexError):
+            return "Unable to analyze desk capacity."
+
     def get_operational_snapshot(self, session: Session, identity: str) -> Dict[str, Any]:
         user = self.get_user_profile(session, identity)
         if not user:
@@ -150,5 +248,7 @@ class PublicReadRepository:
             "desk_membership": membership,
             "desk_limits": desk_limits,
             "counterparties": counterparties,
+            "ai_user_summary": self.generate_ai_user_summary(session, user["id"]) if user else None,
+            "ai_desk_summary": self.generate_ai_desk_summary(session, desk["id"]) if desk else None,
             "source_schema": self.schema,
         }

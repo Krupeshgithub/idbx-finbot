@@ -78,10 +78,12 @@ class RuntimeContextService:
     Collects compact context slices for prompts.
     """
 
-    def get_recent_history(self, conversation_id: Optional[str]) -> List[Dict[str, Any]]:
-        return operational_data_service.get_recent_history(
+    def get_hybrid_history(self, conversation_id: Optional[str], query_text: str) -> List[Dict[str, Any]]:
+        return operational_data_service.get_hybrid_history(
             conversation_id,
-            limit=settings.AIDAAN_HISTORY_WINDOW,
+            query_text=query_text,
+            temporal_limit=settings.AIDAAN_HISTORY_WINDOW // 2,
+            semantic_limit=settings.AIDAAN_HISTORY_WINDOW // 2,
         )
 
     def _truncate_payload(self, data: Any, max_len: int = 500) -> Any:
@@ -213,8 +215,9 @@ class RuntimeContextService:
             logger.info(f"[TIMING] Context cache HIT | conv_id={conversation_id} | elapsed={ctx_elapsed:.1f}ms")
             history_block, ops_block, continuity_block = cached_ctx
         else:
-            logger.info(f"[TIMING] Context cache MISS | conv_id={conversation_id} | fetching from DB")
-            history = self.get_recent_history(conversation_id)
+            logger.info(f"[TIMING] Context cache MISS | conv_id={conversation_id} | fetching from DB (Hybrid Mode)")
+            # Use Hybrid History to get both recent and semantically relevant messages
+            history = self.get_hybrid_history(conversation_id, query_text=base_prompt)
             operational = self.get_operational_context(
                 username=username,
                 conversation_id=conversation_id,
@@ -227,16 +230,19 @@ class RuntimeContextService:
             continuity_block = _json_dump(self.build_continuity_guidance(history))
             _session_ctx_cache.set(conversation_id, username, (history_block, ops_block, continuity_block))
             ctx_elapsed = (time.monotonic() - ctx_start) * 1000
-            logger.info(f"[TIMING] Context built and cached | conv_id={conversation_id} | elapsed={ctx_elapsed:.1f}ms")
+            logger.info(f"[TIMING] Hybrid context built and cached | conv_id={conversation_id} | elapsed={ctx_elapsed:.1f}ms")
 
         return (
             f"{base_prompt}\n\n"
             "Server-side conversation memory below is authoritative and should be used for continuity.\n"
-            f"Only rely on the last {settings.AIDAAN_HISTORY_WINDOW} persisted messages for short-term memory.\n"
+            "HISTORY_SOURCE: Cloud SQL + Vertex AI Hybrid Semantic Memory.\n"
             f"RECENT_HISTORY_JSON: {history_block}\n"
             f"OPERATIONAL_CONTEXT_JSON: {ops_block}\n"
             f"CONTINUITY_GUIDANCE_JSON: {continuity_block}\n"
-            "If the current user turn is brief, elliptical, confirmatory, or otherwise ambiguous, interpret it against CONTINUITY_GUIDANCE_JSON before answering.\n"
+            f"AI_GENERATED_USER_ANALYSIS: {operational.get('ai_user_summary', 'N/A')}\n"
+            f"AI_GENERATED_DESK_ANALYSIS: {operational.get('ai_desk_summary', 'N/A')}\n"
+            "If the current user turn is brief, elliptical, confirmatory, or otherwise ambiguous, interpret it against CONTINUITY_GUIDANCE_JSON and hybrid memory before answering.\n"
+            "Messages marked with 'is_semantic_memory': true are retrieved from long-term memory because they are semantically relevant to the current user query.\n"
             "If pending_follow_up=true, treat the current turn as a likely response to the prior assistant follow-up question unless the new message clearly starts a different topic.\n"
             "Do not answer by analyzing the literal token alone when recent context makes the intended continuation clear.\n"
             "Do not mention hidden database internals unless the user explicitly asks."

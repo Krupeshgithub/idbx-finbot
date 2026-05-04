@@ -401,6 +401,52 @@ class OperationalDataService:
         self._put_in_cache(cache_key, result)
         return result
 
+    def get_hybrid_history(
+        self, 
+        conversation_id: Optional[str], 
+        query_text: str, 
+        temporal_limit: int = 10, 
+        semantic_limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """
+        The 'Gold Standard' for history retrieval:
+        Combines the latest messages (for continuity) with semantically relevant 
+        past messages (for long-term memory), powered by Cloud SQL Vertex AI.
+        """
+        if not conversation_id:
+            return []
+
+        def _fetch():
+            with get_db_session() as session:
+                # 1. Get recent messages for immediate context
+                recent = self.aidaan.get_recent_messages(session, conversation_id, limit=temporal_limit)
+                
+                # 2. Get semantic messages for deep memory
+                semantic = self.aidaan.get_semantic_history(
+                    session, 
+                    conversation_id, 
+                    query_text, 
+                    limit=semantic_limit
+                )
+                
+                # Merge and de-duplicate by ID
+                seen_ids = {msg["id"] for msg in recent}
+                combined = list(recent)
+                for msg in semantic:
+                    if msg["id"] not in seen_ids:
+                        msg["is_semantic_memory"] = True # Flag for the agent to know this is retrieved memory
+                        combined.append(msg)
+                
+                # Sort by creation time to keep the conversation logical
+                combined.sort(key=lambda x: x.get("created_at") or "")
+                return combined
+
+        return self._execute_with_retry(
+            _fetch,
+            label=f"Hybrid history lookup ({conversation_id})",
+            fallback_factory=list,
+        )
+
     def get_conversation_bundle(self, conversation_id: Optional[str], limit: int = None) -> Dict[str, Any]:
         """
         Get conversation bundle with recent messages, drafts, tool invocations, and audit events.

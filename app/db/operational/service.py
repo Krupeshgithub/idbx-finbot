@@ -412,6 +412,9 @@ class OperationalDataService:
         The 'Gold Standard' for history retrieval:
         Combines the latest messages (for continuity) with semantically relevant 
         past messages (for long-term memory), powered by Cloud SQL Vertex AI.
+        
+        OPTIMIZATION: Skip semantic search for very short queries (< 5 words)
+        to avoid expensive embedding computation.
         """
         if not conversation_id:
             return []
@@ -421,21 +424,27 @@ class OperationalDataService:
                 # 1. Get recent messages for immediate context
                 recent = self.aidaan.get_recent_messages(session, conversation_id, limit=temporal_limit)
                 
-                # 2. Get semantic messages for deep memory
-                semantic = self.aidaan.get_semantic_history(
-                    session, 
-                    conversation_id, 
-                    query_text, 
-                    limit=semantic_limit
-                )
-                
-                # Merge and de-duplicate by ID
-                seen_ids = {msg["id"] for msg in recent}
-                combined = list(recent)
-                for msg in semantic:
-                    if msg["id"] not in seen_ids:
-                        msg["is_semantic_memory"] = True # Flag for the agent to know this is retrieved memory
-                        combined.append(msg)
+                # OPTIMIZATION: Skip semantic search for short queries
+                query_word_count = len(query_text.strip().split())
+                if query_word_count < 5:
+                    # For short queries, just return recent messages
+                    combined = list(recent)
+                else:
+                    # 2. Get semantic messages for deep memory (only for longer queries)
+                    semantic = self.aidaan.get_semantic_history(
+                        session, 
+                        conversation_id, 
+                        query_text, 
+                        limit=semantic_limit
+                    )
+                    
+                    # Merge and de-duplicate by ID
+                    seen_ids = {msg["id"] for msg in recent}
+                    combined = list(recent)
+                    for msg in semantic:
+                        if msg["id"] not in seen_ids:
+                            msg["is_semantic_memory"] = True # Flag for the agent to know this is retrieved memory
+                            combined.append(msg)
                 
                 # Sort by creation time to keep the conversation logical
                 # Convert datetime to ISO string for consistent sorting

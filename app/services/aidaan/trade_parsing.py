@@ -19,6 +19,53 @@ _INSTRUMENT_PATTERNS: tuple[tuple[str, str], ...] = (
     ("fx", "FX"),
 )
 
+# Common stock ticker mappings for quick resolution
+_STOCK_TICKER_ALIASES: dict[str, str] = {
+    "google": "GOOGL",
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "amazon": "AMZN",
+    "tesla": "TSLA",
+    "meta": "META",
+    "facebook": "META",
+    "nvidia": "NVDA",
+    "intel": "INTC",
+    "amd": "AMD",
+    "ibm": "IBM",
+    "oracle": "ORCL",
+    "salesforce": "CRM",
+    "adobe": "ADBE",
+    "netflix": "NFLX",
+    "uber": "UBER",
+    "airbnb": "ABNB",
+    "spotify": "SPOT",
+    "zoom": "ZM",
+    "slack": "SLACK",
+    "shopify": "SHOP",
+    "stripe": "STRIPE",
+    "paypal": "PYPL",
+    "square": "SQ",
+    "coinbase": "COIN",
+    "robinhood": "HOOD",
+    "twitter": "TWTR",
+    "x": "TWTR",
+    "reddit": "RDDT",
+    "discord": "DISCORD",
+    "tiktok": "TIKTOK",
+    "snapchat": "SNAP",
+    "pinterest": "PINS",
+    "lyft": "LYFT",
+    "doordash": "DASH",
+    "airbnb": "ABNB",
+    "booking": "BKNG",
+    "expedia": "EXPE",
+    "tripadvisor": "TRIP",
+    "yelp": "YELP",
+    "zillow": "Z",
+    "redfin": "RDFN",
+    "trulia": "TRULIA",
+}
+
 
 def parse_notional(text: str) -> Optional[float]:
     """
@@ -94,3 +141,24 @@ def infer_instrument(text: str, *, default: str = "DEFAULT") -> str:
         if pattern in lowered:
             return instrument
     return default
+
+
+def resolve_stock_ticker(text: str) -> Optional[str]:
+    """
+    Resolve common company names to their stock tickers.
+    Returns the ticker symbol if found, None otherwise.
+    
+    Example:
+        resolve_stock_ticker("google price") -> "GOOGL"
+        resolve_stock_ticker("apple stock") -> "AAPL"
+    """
+    lowered = text.lower()
+    
+    # Check for exact word matches in the text
+    for company_name, ticker in _STOCK_TICKER_ALIASES.items():
+        # Use word boundary to avoid partial matches
+        if re.search(rf"\b{re.escape(company_name)}\b", lowered):
+            return ticker
+    
+    return None
+

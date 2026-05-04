@@ -213,17 +213,23 @@ class AidaanStoreRepository:
         """
         Search for past messages that are semantically similar to the current query.
         Uses cosine similarity on the content_vector column.
+        
+        OPTIMIZATION: Cache query embedding to avoid recomputation.
         """
         from sqlalchemy import text
         
         # The <=> operator is for cosine distance in pgvector
+        # OPTIMIZATION: Pre-compute query embedding once, reuse in ORDER BY and SELECT
         stmt = text(f"""
+            WITH query_embedding AS (
+                SELECT aidaan.get_embedding(:query) as query_vec
+            )
             SELECT id, role, content, agent_name, created_at,
-                   (1 - (content_vector <=> aidaan.get_embedding(:query))) as similarity
-            FROM {self.schema}.messages
+                   (1 - (content_vector <=> query_embedding.query_vec)) as similarity
+            FROM {self.schema}.messages, query_embedding
             WHERE conversation_id = :conv_id
             AND content_vector IS NOT NULL
-            ORDER BY content_vector <=> aidaan.get_embedding(:query)
+            ORDER BY content_vector <=> query_embedding.query_vec
             LIMIT :limit
         """)
         

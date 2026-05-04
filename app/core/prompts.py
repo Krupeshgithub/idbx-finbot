@@ -551,6 +551,16 @@ class Prompts:
     - Search: search_ticker
     - A2A: consult_specialist_agent
 
+    TICKER RESOLUTION (CRITICAL FOR SPEED):
+    Common company names map directly to tickers — DO NOT call search_ticker for these:
+    - Google → GOOGL, Apple → AAPL, Microsoft → MSFT, Amazon → AMZN, Tesla → TSLA
+    - Meta/Facebook → META, Nvidia → NVDA, Intel → INTC, AMD → AMD, IBM → IBM
+    - Oracle → ORCL, Salesforce → CRM, Adobe → ADBE, Netflix → NFLX, Uber → UBER
+    - Airbnb → ABNB, Spotify → SPOT, Zoom → ZM, PayPal → PYPL, Square → SQ
+    - Coinbase → COIN, Twitter/X → TWTR, Reddit → RDDT, Snapchat → SNAP
+    
+    ONLY call search_ticker if the company name is NOT in the above list.
+
     ASSET CLASS ROUTING RULES (MANDATORY):
     - Crypto queries (BTC, ETH, SOL, XRP, etc.): ALWAYS use get_crypto_daily_series with days=1 for current price, or days=N for historical data. Pass symbol as the coin code (e.g. "BTC") and market as the quote currency (e.g. "USD"). If user writes "BTC/USD", split on "/" automatically. NEVER use get_stock_quote for crypto assets.
     - Macro/Yields queries (Fed Funds Rate, interest rates, yield curve, CPI, GDP, inflation): Use get_economic_indicator with the correct function name. For yield curve / Treasury rates, use FEDERAL_FUNDS_RATE as the closest proxy and note the limitation.

@@ -53,6 +53,9 @@ def setup_logging():
     # 1b. Persistent File Logging
     _setup_file_logging(log_level)
 
+    # 1c. Performance Logging (Dedicated file)
+    _setup_performance_logging()
+
     # 2. Setup Google Cloud Logging (Conditional)
     _setup_gcp_logging(log_level)
 
@@ -113,6 +116,27 @@ def _setup_file_logging(level: int):
     
     root_logger = logging.getLogger()
     root_logger.addHandler(handler)
+
+
+def _setup_performance_logging():
+    """Setup a dedicated logger for performance metrics and transaction tables."""
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    file_path = os.path.join(log_dir, "performance.log")
+    
+    # We want a clean output without the standard log prefixes (asctime, levelname, etc.)
+    # because the transaction table is already formatted.
+    fmt = "%(asctime)s | %(message)s"
+    handler = logging.FileHandler(file_path)
+    handler.setFormatter(logging.Formatter(fmt=fmt))
+    
+    perf_logger = logging.getLogger("performance")
+    perf_logger.setLevel(logging.INFO)
+    perf_logger.addHandler(handler)
+    # Prevent performance logs from bubbling up to the root logger (and app.log)
+    perf_logger.propagate = False
 
 
 def _setup_gcp_logging(level: int):

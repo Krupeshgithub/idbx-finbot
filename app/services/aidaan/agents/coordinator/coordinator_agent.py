@@ -44,6 +44,7 @@ registry.register("operational", operational_agent)
 registry.register("calculation", calculation_agent)
 
 logger = logging.getLogger(__name__)
+perf_logger = logging.getLogger("performance")
 
 
 class CoordinatorAgent(BaseAgent):
@@ -981,17 +982,17 @@ class CoordinatorAgent(BaseAgent):
             response.latency_ms = (time.monotonic() - start_time) * 1000
             
             # Final Transaction Log for speed and accuracy tracking
-            logger.info("*************")
-            logger.info(f"TRANSACTION_LOG | conv_id={conv_id}")
-            logger.info(f"QUESTION: {text}")
-            logger.info(f"ANSWER: {response.reply}")
-            logger.info(f"TOTAL_LATENCY: {response.latency_ms/1000:.3f}s")
+            perf_logger.info("*************")
+            perf_logger.info(f"TRANSACTION_LOG | conv_id={conv_id}")
+            perf_logger.info(f"QUESTION: {text}")
+            perf_logger.info(f"ANSWER: {response.reply}")
+            perf_logger.info(f"TOTAL_LATENCY: {response.latency_ms/1000:.3f}s")
             
             # Consolidated Performance Table
             from app.services.aidaan.performance import format_metrics_table
             performance_table = format_metrics_table()
-            logger.info("\n" + performance_table)
-            logger.info("*************")
+            perf_logger.info("\n" + performance_table)
+            perf_logger.info("*************")
             
             return response
 

@@ -50,6 +50,9 @@ def setup_logging():
     else:
         _setup_text_logging(log_level)
 
+    # 1b. Setup File Handler (Persistent)
+    _setup_file_logging(log_level)
+
     # 2. Setup Google Cloud Logging (Conditional)
     _setup_gcp_logging(log_level)
 
@@ -123,3 +126,23 @@ def _setup_gcp_logging(level: int):
     except Exception as exc:
         # Don't fail the app if logging setup fails
         print(f"[Logging] Failed to initialize GCP Logging: {exc}", file=sys.stderr)
+
+
+def _setup_file_logging(level: int):
+    """Save all logs to a local file for persistence."""
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+        
+    log_file = os.path.join(log_dir, "aidaan.log")
+    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    
+    handler = logging.FileHandler(log_file)
+    handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+    handler.setLevel(level)
+    
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    print(f"[Logging] File handler active: {log_file}")
+

@@ -299,6 +299,48 @@ class OperationalAgent(BaseAgent):
                 except ValueError:
                     pass
             return self._build_history_response(conversation_id=conversation_id, requested_count=requested_count)
+        if sub_intent == "profile_recall":
+            # Use hybrid memory (recent + Vertex semantic) to extract preferences deterministically.
+            history = runtime_context_service.get_hybrid_history(conversation_id, query_text=text)
+            joined = "\n".join(
+                self._clean_message_text(item.get("content"))
+                for item in history
+                if item.get("role") == "user"
+            )
+            # Extract common patterns the user states.
+            desk = None
+            risk_limit = None
+            tenor = None
+            m = re.search(r"\bdesk\s+is\s+([A-Za-z0-9_-]+)", joined, flags=re.IGNORECASE)
+            if m:
+                desk = m.group(1)
+            m = re.search(r"\brisk\s+limit\s+is\s+([0-9.]+)\s*([A-Za-z]{3})", joined, flags=re.IGNORECASE)
+            if m:
+                risk_limit = f"{m.group(1)} {m.group(2).upper()}"
+            m = re.search(r"\bdefault\s+tenor\s+is\s+([0-9]+[A-Za-z])\b", joined, flags=re.IGNORECASE)
+            if m:
+                tenor = m.group(1).upper()
+
+            if desk or risk_limit or tenor:
+                parts = []
+                if desk:
+                    parts.append(f"desk={desk}")
+                if risk_limit:
+                    parts.append(f"risk_limit={risk_limit}")
+                if tenor:
+                    parts.append(f"default_tenor={tenor}")
+                return self.build_message_response(
+                    reply=" ".join(parts),
+                    bullets=[],
+                    conversation_id=conversation_id,
+                    model_info=self.get_model_info(model_override="profile-recall-fastpath"),
+                )
+            return self.build_message_response(
+                reply="I couldn't find your saved desk/risk/tenor in this conversation yet.",
+                bullets=["Ask: `Remember: My desk is ...` to store it."],
+                conversation_id=conversation_id,
+                model_info=self.get_model_info(model_override="profile-recall-fastpath"),
+            )
         if sub_intent == "conversation_logic":
             return await self._build_conversation_logic_response(
                 text=text,

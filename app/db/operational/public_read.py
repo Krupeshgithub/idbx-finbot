@@ -348,13 +348,21 @@ class PublicReadRepository:
         desk_limits = self.get_desk_limits(session, desk["id"]) if desk else []
         counterparties = self.get_counterparties(session, desk["id"]) if desk else []
 
-        return {
+        snapshot: Dict[str, Any] = {
             "user": user,
             "desk": desk,
             "desk_membership": membership,
             "desk_limits": desk_limits,
             "counterparties": counterparties,
-            "ai_user_summary": self.generate_ai_user_summary(session, user["id"]) if user else None,
-            "ai_desk_summary": self.generate_ai_desk_summary(session, desk["id"]) if desk else None,
             "source_schema": self.schema,
         }
+        
+        # IMPORTANT: In-DB Gemini calls are high-latency. Disable by default for normal chat turns.
+        if settings.ENABLE_DB_AI_SUMMARIES:
+            snapshot["ai_user_summary"] = self.generate_ai_user_summary(session, user["id"]) if user else None
+            snapshot["ai_desk_summary"] = self.generate_ai_desk_summary(session, desk["id"]) if desk else None
+        else:
+            snapshot["ai_user_summary"] = None
+            snapshot["ai_desk_summary"] = None
+
+        return snapshot

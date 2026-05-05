@@ -584,6 +584,23 @@ class CoordinatorAgent(BaseAgent):
                 confidence=0.96,
             )), "history_keyword")
 
+        # Profile recall heuristic: user asking for their desk/risk/tenor preferences.
+        if any(
+            phrase in lowered
+            for phrase in [
+                "what is my desk",
+                "what's my desk",
+                "my risk limit",
+                "default tenor",
+            ]
+        ):
+            return _log_heuristic(self._default_routing_decision(
+                "operational",
+                "User profile recall query matched heuristic.",
+                sub_intent="profile_recall",
+                confidence=0.95,
+            ), "profile_recall")
+
         if self._is_conversation_logic_query(lowered):
             return _log_heuristic(self._default_routing_decision(
                 "operational",
@@ -773,8 +790,33 @@ class CoordinatorAgent(BaseAgent):
         start_time = time.monotonic()
         logger.info(f"[TIMING] Request received | conv_id={conv_id}")
 
-        # 0. Early domain validation - reject out-of-domain queries immediately
+        # Ultra-fast path: "remember/store ... reply only X"
         lowered_text = text.strip().lower()
+        reply_only_match = re.search(
+            r"\breply only\s+([A-Za-z0-9_-]{1,32})\.?\s*$",
+            text.strip(),
+            flags=re.IGNORECASE,
+        )
+        if reply_only_match and any(
+            lowered_text.startswith(prefix)
+            for prefix in ("remember:", "remember ", "store this:", "store this ", "save this:", "save this ")
+        ):
+            token = reply_only_match.group(1)
+            latency_ms = (time.monotonic() - start_time) * 1000
+            logger.info(
+                "[Coordinator] Reply-only fast path engaged | conv_id=%s token=%s",
+                conv_id,
+                token,
+            )
+            return self.build_message_response(
+                reply=token,
+                bullets=[],
+                conversation_id=conv_id,
+                model_info=self.get_model_info(model_override="reply-only-fastpath"),
+                latency_ms=latency_ms,
+            )
+
+        # 0. Early domain validation - reject out-of-domain queries immediately
         if self._is_out_of_domain(lowered_text):
             latency_ms = (time.monotonic() - start_time) * 1000
             logger.info(

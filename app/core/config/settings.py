@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     ADVISORY_CONFIDENCE_THRESHOLD: float = 0.85
     ENABLE_STRATEGIC_DATA_REDACTION: bool = True
     ENABLE_PII_REDACTION: bool = True
+    
+    # --- Vertex AI in-DB (google_ml.predict_row) summaries ---
+    # These are expensive and add seconds of latency to prompt-context assembly.
+    # Keep disabled by default; enable only for dedicated diagnostic/admin flows.
+    ENABLE_DB_AI_SUMMARIES: bool = False
 
     # --- Multi-Language Support ---
     SUPPORTED_LANGUAGES: str = "All"

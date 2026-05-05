@@ -64,6 +64,7 @@ async def _fetch_av(params: Dict[str, Any]) -> Dict[str, Any]:
                 "[AV] ✅ Success | fn=%s symbol=%s elapsed_ms=%s | keys=%s",
                 fn, symbol, elapsed_ms, list(data.keys())[:4]
             )
+            logger.info(f"*************\nPERFORMANCE_SUMMARY|Alpha_Vantage|fn={fn}|symbol={symbol}|tokens=N/A|seconds={elapsed_ms/1000:.3f}\n*************")
             return data
     except Exception as exc:
         logger.error("[AV] ❌ HTTP fetch failed | fn=%s symbol=%s | %s", fn, symbol, exc)

@@ -177,15 +177,20 @@ class LLMClient:
                         timeout=settings.VERTEX_AI_REQUEST_TIMEOUT_SECONDS
                     )
                 elapsed = self._elapsed_ms(started)
+                tokens = "N/A"
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    tokens = getattr(response.usage_metadata, "total_token_count", "N/A")
                 logger.info(
-                    "[LLMClient][%s] %s completed | model=%s | latency_ms=%s | attempt=%s",
+                    "[LLMClient][%s] %s completed | model=%s | latency_ms=%s | tokens=%s | attempt=%s",
                     trace_id or "no-trace",
                     stage,
                     model,
                     elapsed,
+                    tokens,
                     attempt + 1,
                 )
-                logger.info(f"[TIMING] Gemini API call completed | stage={stage} | elapsed={elapsed/1000:.3f}s")
+                logger.info(f"[TIMING] Gemini API call completed | stage={stage} | elapsed={elapsed/1000:.3f}s | tokens={tokens}")
+                logger.info(f"*************\nPERFORMANCE_SUMMARY|LLM_Generation|model={model}|tokens={tokens}|seconds={elapsed/1000:.3f}\n*************")
                 return response
             except asyncio.TimeoutError:
                 elapsed = self._elapsed_ms(started)

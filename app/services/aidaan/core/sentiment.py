@@ -210,6 +210,8 @@ class NewsSentimentAnalyzer:
                 f"Speed: {len(texts)/elapsed_ms*1000:.1f} texts/sec | "
                 f"Sentiment: POS:{pos_count} NEG:{neg_count} NEU:{neu_count}"
             )
+            logger.info(f"*************\nPERFORMANCE_SUMMARY|FinBERT|headlines={len(texts)}|speed={len(texts)/elapsed_ms*1000:.1f} texts/sec|tokens=N/A|seconds={elapsed_ms/1000:.3f}\n*************")
+            
             
             return processed_results
             

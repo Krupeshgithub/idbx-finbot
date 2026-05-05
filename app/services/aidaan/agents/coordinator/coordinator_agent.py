@@ -384,6 +384,45 @@ class CoordinatorAgent(BaseAgent):
                 confidence=0.99,
             ), "greeting")
 
+        # ------------------------------------------------------------------
+        # Profile & preference recall heuristics (MUST run before "what is"
+        # educational heuristics; otherwise we mis-route to Market).
+        # ------------------------------------------------------------------
+        if any(
+            phrase in lowered
+            for phrase in [
+                "what is my desk",
+                "what's my desk",
+                "my risk limit",
+                "default tenor",
+            ]
+        ):
+            return _log_heuristic(self._default_routing_decision(
+                "operational",
+                "User profile recall query matched heuristic.",
+                sub_intent="profile_recall",
+                confidence=0.97,
+            ), "profile_recall")
+
+        if any(
+            phrase in lowered
+            for phrase in [
+                "carrying trades overnight",
+                "carry trades overnight",
+                "holding risk overnight",
+                "hold risk overnight",
+                "carry positions past close",
+                "hold positions overnight",
+                "overnight risk",
+            ]
+        ):
+            return _log_heuristic(self._default_routing_decision(
+                "operational",
+                "User preference recall (overnight risk) matched heuristic.",
+                sub_intent="preference_recall",
+                confidence=0.97,
+            ), "preference_recall")
+
         if compact in continue_set | stop_set | clarify_set:
             control_signal = (
                 "continue" if compact in continue_set
@@ -584,22 +623,7 @@ class CoordinatorAgent(BaseAgent):
                 confidence=0.96,
             )), "history_keyword")
 
-        # Profile recall heuristic: user asking for their desk/risk/tenor preferences.
-        if any(
-            phrase in lowered
-            for phrase in [
-                "what is my desk",
-                "what's my desk",
-                "my risk limit",
-                "default tenor",
-            ]
-        ):
-            return _log_heuristic(self._default_routing_decision(
-                "operational",
-                "User profile recall query matched heuristic.",
-                sub_intent="profile_recall",
-                confidence=0.95,
-            ), "profile_recall")
+        # (profile_recall handled earlier)
 
         if self._is_conversation_logic_query(lowered):
             return _log_heuristic(self._default_routing_decision(

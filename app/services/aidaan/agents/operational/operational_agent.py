@@ -341,6 +341,44 @@ class OperationalAgent(BaseAgent):
                 conversation_id=conversation_id,
                 model_info=self.get_model_info(model_override="profile-recall-fastpath"),
             )
+        if sub_intent == "preference_recall":
+            # Answer preference questions directly from hybrid memory, not history-summary templates.
+            history = runtime_context_service.get_hybrid_history(conversation_id, query_text=text)
+            joined = "\n".join(
+                self._clean_message_text(item.get("content"))
+                for item in history
+                if item.get("role") == "user"
+            ).lower()
+
+            # Detect explicit "avoid/refuse overnight risk" style statements.
+            avoid_overnight = any(
+                phrase in joined
+                for phrase in [
+                    "avoid holding positions overnight",
+                    "avoid holding position overnight",
+                    "refuse overnight risk",
+                    "no overnight risk",
+                    "don't hold overnight",
+                    "do not hold overnight",
+                    "no overnight",
+                ]
+            )
+
+            if avoid_overnight:
+                return self.build_message_response(
+                    reply="No — you said you avoid holding positions overnight / refuse overnight risk.",
+                    bullets=[],
+                    conversation_id=conversation_id,
+                    model_info=self.get_model_info(model_override="preference-recall-fastpath"),
+                )
+
+            # If we don't have explicit preference stored yet, be honest.
+            return self.build_message_response(
+                reply="I don't see a clear saved preference about overnight risk yet.",
+                bullets=["Try: `Store this: I avoid holding positions overnight. Reply only Saved.`"],
+                conversation_id=conversation_id,
+                model_info=self.get_model_info(model_override="preference-recall-fastpath"),
+            )
         if sub_intent == "conversation_logic":
             return await self._build_conversation_logic_response(
                 text=text,

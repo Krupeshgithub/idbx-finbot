@@ -221,6 +221,12 @@ class RuntimeContextService:
             ctx_elapsed = (time.monotonic() - ctx_start) * 1000
             logger.info(f"[TIMING] Context cache HIT | conv_id={conversation_id} | elapsed={ctx_elapsed:.1f}ms")
             history_block, ops_block, continuity_block = cached_ctx
+            # `ops_block` is a JSON string; reconstruct dict for later `.get()` usage.
+            # (On cache HIT we don't recompute operational context from DB.)
+            try:
+                operational: Dict[str, Any] = json.loads(ops_block) if ops_block else {}
+            except Exception:
+                operational = {}
         else:
             logger.info(f"[TIMING] Context cache MISS | conv_id={conversation_id} | fetching from DB (Hybrid Mode)")
             # Use Hybrid History to get both recent and semantically relevant messages

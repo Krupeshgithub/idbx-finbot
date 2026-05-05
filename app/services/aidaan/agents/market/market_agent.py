@@ -91,23 +91,13 @@ class MarketAgent(BaseAgent):
                 "fast_path_kind": "clarify_response",
             })
         elif sub_intent == "education" and not requires_freshness:
-            # Only skip tools if the query is purely conceptual/explanatory.
-            # If the user says "fetch", "calculate", "pull", "get", "show me" — they need live data.
-            fetch_verbs = re.search(
-                r"\b(fetch|pull|get|show|calculate|compute|find|retrieve|check|run|analyze|analyse)\b",
-                normalized_text,
+            # CRITICAL FIX: Educational queries should ALWAYS have tools available
+            # The model needs tools to provide accurate, data-backed answers
+            # Only skip tools for pure conversational control signals (stop/clarify)
+            logger.info(
+                "[MarketAgent] 🔧 education mode WITH tools enabled for accuracy"
             )
-            if not fetch_verbs:
-                plan.update({
-                    "tool_mode": "none",
-                    "model_name": settings.VERTEX_AI_MODEL_NAME,
-                    "fast_path_kind": "education_no_tools",
-                })
-            else:
-                logger.info(
-                    "[MarketAgent] 🔧 education_no_tools BLOCKED by fetch verb '%s' — forcing full tool mode",
-                    fetch_verbs.group(0),
-                )
+            # Keep tool_mode as "full" - do NOT set to "none"
 
         logger.info(
             "[MarketAgent] Execution plan resolved | sub_intent=%s control=%s tool_mode=%s model=%s fast_path=%s freshness_requested=%s freshness_negated=%s requires_freshness=%s",
@@ -158,11 +148,12 @@ class MarketAgent(BaseAgent):
         if sub_intent == "education":
             return (
                 base
-                + " The user is asking for explanation or overview, not a live trade read."
-                + " Do not jump straight into one-company ticker analysis unless the user explicitly asked for a stock."
-                + " Prefer clear explanatory sections such as [Direct Answer], [How It Works], [Why It Matters], [Optional Follow-up]."
+                + " The user is asking for explanation or overview."
+                + " You MUST provide accurate, factual information."
+                + " If you need specific data (prices, dates, metrics), use the available tools."
+                + " NEVER say 'I am unable to' or 'I cannot' — you have tools available."
+                + " Structure your response with clear sections: [Direct Answer], [How It Works], [Why It Matters], [Optional Follow-up]."
                 + " Avoid forced trade implication language for pure educational questions."
-                + " CRITICAL: If the user asks to 'fetch', 'calculate from', or 'get' specific data — state clearly that live data tools are not available in this mode and ask them to rephrase with 'current' or 'latest' to trigger live data fetching."
             )
 
         if sub_intent == "technical_indicator":

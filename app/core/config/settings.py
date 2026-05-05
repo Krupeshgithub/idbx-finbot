@@ -55,12 +55,12 @@ class Settings(BaseSettings):
     VERTEX_AI_REASONING_MODEL_NAME: str = "gemini-2.5-pro"
     VERTEX_AI_ROUTER_MODEL_NAME: str = "gemini-2.5-flash"
     VERTEX_AI_API_VERSION: str = "v1"
-    VERTEX_AI_TEMPERATURE: float = 0.2
-    VERTEX_AI_MAX_OUTPUT_TOKENS: int = 16384
-    VERTEX_AI_MAX_WORKERS: int = 12
-    VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 12
-    VERTEX_AI_REQUEST_TIMEOUT_SECONDS: int = 120  # 2 minutes timeout for Gemini API calls
-    VERTEX_AI_MAX_TOOLS_PER_TURN: int = 10  # Limit tools per turn to prevent context overflow
+    VERTEX_AI_TEMPERATURE: float = 0.1  # Reduced from 0.2 for faster, more deterministic responses
+    VERTEX_AI_MAX_OUTPUT_TOKENS: int = 8192  # Reduced from 16384 to speed up generation
+    VERTEX_AI_MAX_WORKERS: int = 16  # Increased from 12 for better parallelism
+    VERTEX_AI_MAX_CONCURRENT_REQUESTS: int = 8  # Reduced from 12 to prevent 429 quota errors
+    VERTEX_AI_REQUEST_TIMEOUT_SECONDS: int = 60  # Reduced from 120 to fail fast
+    VERTEX_AI_MAX_TOOLS_PER_TURN: int = 5  # Reduced from 10 to prevent long tool chains
     VERTEX_AI_USE_EXPRESS_MODE: bool = True
     VERTEX_AI_SERVICE_ACCOUNT_FILE: Optional[str] = None
     VERTEX_AI_SERVICE_ACCOUNT_JSON: Optional[str] = None
@@ -108,16 +108,16 @@ class Settings(BaseSettings):
     DB_AIDAAN_SCHEMA: str = "aidaan"
     
     # --- AIDAAN Context & History Configuration ---
-    AIDAAN_HISTORY_WINDOW: int = 20  # Maximum conversation history messages to load (10 Q+A pairs = 20 rows)
-    AIDAAN_SEMANTIC_LIMIT: int = 10  # Number of semantic search results (increased from 5)
-    AIDAAN_SEMANTIC_THRESHOLD: float = 0.7  # Minimum similarity score for semantic results (0.0-1.0)
-    AIDAAN_MAX_TOOL_INVOCATIONS: int = 10  # Maximum tool invocations to load
-    AIDAAN_MAX_RFQ_DRAFTS: int = 5  # Maximum RFQ drafts to load
-    AIDAAN_MAX_AUDIT_EVENTS: int = 5  # Maximum audit events to load
+    AIDAAN_HISTORY_WINDOW: int = 10  # Reduced from 20 to speed up context loading (5 Q+A pairs)
+    AIDAAN_SEMANTIC_LIMIT: int = 5  # Reduced from 10 to speed up semantic search
+    AIDAAN_SEMANTIC_THRESHOLD: float = 0.75  # Increased from 0.7 for better quality filtering
+    AIDAAN_MAX_TOOL_INVOCATIONS: int = 5  # Reduced from 10 to speed up context loading
+    AIDAAN_MAX_RFQ_DRAFTS: int = 3  # Reduced from 5 to speed up context loading
+    AIDAAN_MAX_AUDIT_EVENTS: int = 3  # Reduced from 5 to speed up context loading
     
     # --- Cache Configuration ---
-    CONTEXT_CACHE_TTL_SECONDS: int = 300  # Context cache time-to-live (5 minutes)
-    CACHE_MAX_SIZE: int = 500  # Maximum number of cache entries (increased from 200)
+    CONTEXT_CACHE_TTL_SECONDS: int = 600  # Increased from 300 to 10 minutes for better cache hit rate
+    CACHE_MAX_SIZE: int = 1000  # Increased from 500 for better cache coverage
     
     # --- Performance Monitoring ---
     SLOW_QUERY_THRESHOLD_MS: int = 1000  # Threshold for slow query warnings (1 second)

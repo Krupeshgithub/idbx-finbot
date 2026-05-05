@@ -3,6 +3,7 @@ Read/write access layer for AIDAAN sidecar tables.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -13,6 +14,8 @@ from sqlalchemy.orm import Session
 from app.core.config.settings import settings
 from app.db.operational.base import count_rows, fetch_all, insert_row
 from app.db.models import KillSwitchEvent, RFQDraft
+
+logger = logging.getLogger(__name__)
 
 
 class AidaanStoreRepository:
@@ -174,34 +177,67 @@ class AidaanStoreRepository:
         """
         Store a message and automatically generate its embedding vector using 
         the Cloud SQL Vertex AI integration.
+        
+        Falls back to storing without embeddings if Vertex AI integration is not available.
         """
         from sqlalchemy import text
         import json
         
-        # We use a raw insert to leverage the database-side embedding function
-        # This is more efficient than calculating embeddings in Python.
-        stmt = text(f"""
-            INSERT INTO {self.schema}.messages 
-            (id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at, content_vector)
-            VALUES 
-            (:id, :conversation_id, :role, :content, :agent_name, :model_name, :metadata_json, :created_at, 
-             aidaan.get_embedding(:content))
-            RETURNING id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at
-        """)
+        message_id = self._new_id()
+        created_at = datetime.utcnow()
         
         params = {
-            "id": self._new_id(),
+            "id": message_id,
             "conversation_id": conversation_id,
             "role": role,
             "content": content,
             "agent_name": agent_name,
             "model_name": model_name,
             "metadata_json": json.dumps(metadata or {}),
-            "created_at": datetime.utcnow(),
+            "created_at": created_at,
         }
         
-        result = session.execute(stmt, params).mappings().first()
-        return dict(result) if result else {}
+        # Try to insert with embedding first (Vertex AI integration)
+        try:
+            stmt = text(f"""
+                INSERT INTO {self.schema}.messages 
+                (id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at, content_vector)
+                VALUES 
+                (:id, :conversation_id, :role, :content, :agent_name, :model_name, :metadata_json, :created_at, 
+                 aidaan.get_embedding(:content))
+                RETURNING id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at
+            """)
+            
+            result = session.execute(stmt, params).mappings().first()
+            logger.debug(f"[Vertex AI] Message stored with embedding | id={message_id}")
+            return dict(result) if result else {}
+            
+        except Exception as e:
+            # Fallback: Store without embedding if Vertex AI integration is not available
+            logger.warning(
+                f"[Vertex AI] Failed to generate embedding, storing without vector | "
+                f"error={str(e)[:100]} | id={message_id}"
+            )
+            
+            try:
+                stmt_fallback = text(f"""
+                    INSERT INTO {self.schema}.messages 
+                    (id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at)
+                    VALUES 
+                    (:id, :conversation_id, :role, :content, :agent_name, :model_name, :metadata_json, :created_at)
+                    RETURNING id, conversation_id, role, content, agent_name, model_name, metadata_json, created_at
+                """)
+                
+                result = session.execute(stmt_fallback, params).mappings().first()
+                logger.info(f"[Vertex AI] Message stored without embedding (fallback) | id={message_id}")
+                return dict(result) if result else {}
+                
+            except Exception as fallback_error:
+                logger.error(
+                    f"[Vertex AI] Failed to store message even without embedding | "
+                    f"error={str(fallback_error)} | id={message_id}"
+                )
+                raise
 
     def get_semantic_history(
         self, 
@@ -216,6 +252,7 @@ class AidaanStoreRepository:
         Uses cosine similarity on the content_vector column with configurable threshold.
         
         OPTIMIZATION: Filter by similarity threshold in SQL for better performance.
+        Falls back to empty results if Vertex AI integration is not available.
         """
         from sqlalchemy import text
         import time
@@ -228,44 +265,53 @@ class AidaanStoreRepository:
         
         start_time = time.monotonic()
         
-        # The <=> operator is for cosine distance in pgvector
-        # Filter by similarity threshold in SQL for better performance
-        stmt = text(f"""
-            WITH query_embedding AS (
-                SELECT aidaan.get_embedding(:query) as query_vec
-            ),
-            ranked_messages AS (
-                SELECT 
-                    id, role, content, agent_name, created_at,
-                    (1 - (content_vector <=> query_embedding.query_vec)) as similarity
-                FROM {self.schema}.messages, query_embedding
-                WHERE conversation_id = :conv_id
-                AND content_vector IS NOT NULL
-                AND (1 - (content_vector <=> query_embedding.query_vec)) >= :threshold
-                ORDER BY content_vector <=> query_embedding.query_vec
-                LIMIT :limit
+        try:
+            # The <=> operator is for cosine distance in pgvector
+            # Filter by similarity threshold in SQL for better performance
+            stmt = text(f"""
+                WITH query_embedding AS (
+                    SELECT aidaan.get_embedding(:query) as query_vec
+                ),
+                ranked_messages AS (
+                    SELECT 
+                        id, role, content, agent_name, created_at,
+                        (1 - (content_vector <=> query_embedding.query_vec)) as similarity
+                    FROM {self.schema}.messages, query_embedding
+                    WHERE conversation_id = :conv_id
+                    AND content_vector IS NOT NULL
+                    AND (1 - (content_vector <=> query_embedding.query_vec)) >= :threshold
+                    ORDER BY content_vector <=> query_embedding.query_vec
+                    LIMIT :limit
+                )
+                SELECT * FROM ranked_messages
+                ORDER BY created_at ASC
+            """)
+            
+            params = {
+                "query": query_text,
+                "conv_id": conversation_id,
+                "limit": limit,
+                "threshold": similarity_threshold
+            }
+            
+            result = [dict(row) for row in session.execute(stmt, params).mappings().all()]
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            
+            # Enhanced logging
+            logger.info(
+                f"[TEST] Semantic history: results={len(result)} | latency_ms={elapsed_ms:.1f} | "
+                f"threshold={similarity_threshold} | limit={limit} | optimization=threshold_filtered"
             )
-            SELECT * FROM ranked_messages
-            ORDER BY created_at ASC
-        """)
-        
-        params = {
-            "query": query_text,
-            "conv_id": conversation_id,
-            "limit": limit,
-            "threshold": similarity_threshold
-        }
-        
-        result = [dict(row) for row in session.execute(stmt, params).mappings().all()]
-        elapsed_ms = (time.monotonic() - start_time) * 1000
-        
-        # Enhanced logging
-        logger.info(
-            f"[TEST] Semantic history: results={len(result)} | latency_ms={elapsed_ms:.1f} | "
-            f"threshold={similarity_threshold} | limit={limit} | optimization=threshold_filtered"
-        )
-        
-        return result
+            
+            return result
+            
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            logger.warning(
+                f"[Vertex AI] Semantic search failed, returning empty results | "
+                f"error={str(e)[:100]} | latency_ms={elapsed_ms:.1f}"
+            )
+            return []
 
     def store_rfq_draft(
         self,

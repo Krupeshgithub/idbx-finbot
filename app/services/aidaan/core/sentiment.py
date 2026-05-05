@@ -210,6 +210,16 @@ class NewsSentimentAnalyzer:
                 f"Speed: {len(texts)/elapsed_ms*1000:.1f} texts/sec | "
                 f"Sentiment: POS:{pos_count} NEG:{neg_count} NEU:{neu_count}"
             )
+            
+            # Record in performance tracker
+            from app.services.aidaan.performance import record_metric
+            record_metric(
+                component="FinBERT (GPU L4)",
+                latency=elapsed_ms/1000,
+                details=f"Processed {len(texts)} headlines",
+                tokens="N/A"
+            )
+
             logger.info(f"*************\nPERFORMANCE_SUMMARY|FinBERT|headlines={len(texts)}|speed={len(texts)/elapsed_ms*1000:.1f} texts/sec|tokens=N/A|seconds={elapsed_ms/1000:.3f}\n*************")
             
             

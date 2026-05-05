@@ -64,6 +64,16 @@ async def _fetch_av(params: Dict[str, Any]) -> Dict[str, Any]:
                 "[AV] ✅ Success | fn=%s symbol=%s elapsed_ms=%s | keys=%s",
                 fn, symbol, elapsed_ms, list(data.keys())[:4]
             )
+            
+            # Record in performance tracker
+            from app.services.aidaan.performance import record_metric
+            record_metric(
+                component="Alpha Vantage Fetch",
+                latency=elapsed_ms/1000,
+                details=f"Function: {fn}, Symbol: {symbol}",
+                tokens="N/A"
+            )
+
             logger.info(f"*************\nPERFORMANCE_SUMMARY|Alpha_Vantage|fn={fn}|symbol={symbol}|tokens=N/A|seconds={elapsed_ms/1000:.3f}\n*************")
             return data
     except Exception as exc:

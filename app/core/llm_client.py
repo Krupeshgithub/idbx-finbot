@@ -180,6 +180,16 @@ class LLMClient:
                 tokens = "N/A"
                 if hasattr(response, "usage_metadata") and response.usage_metadata:
                     tokens = getattr(response.usage_metadata, "total_token_count", "N/A")
+                
+                # Record in performance tracker
+                from app.services.aidaan.performance import record_metric
+                record_metric(
+                    component=f"LLM ({stage})",
+                    latency=elapsed/1000,
+                    details=f"Model: {model}",
+                    tokens=str(tokens)
+                )
+
                 logger.info(
                     "[LLMClient][%s] %s completed | model=%s | latency_ms=%s | tokens=%s | attempt=%s",
                     trace_id or "no-trace",

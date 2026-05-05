@@ -800,15 +800,11 @@ class CoordinatorAgent(BaseAgent):
     ) -> AidaanMessageResponse:
         """
         Entry point for all user messages. Determines the intent and delegates work.
-
-        Args:
-            text: Raw user input from the chat/voice interface.
-            conversation_id: Unique session identifier for context retention.
-            context: Additional metadata (username, desk_id, etc.)
-
-        Returns:
-            AidaanMessageResponse: Synthesized response from a specialized agent.
         """
+        # Reset performance metrics for the new request
+        from app.services.aidaan.performance import clear_metrics, format_metrics_table
+        clear_metrics()
+
         conv_id = conversation_id or f"conv-{uuid4().hex[:8]}"
         logger.info(f"[Coordinator] Handling session {conv_id}: {text[:50]}...")
         start_time = time.monotonic()
@@ -983,6 +979,20 @@ class CoordinatorAgent(BaseAgent):
             
             # Inject latency into the final response
             response.latency_ms = (time.monotonic() - start_time) * 1000
+            
+            # Final Transaction Log for speed and accuracy tracking
+            logger.info("*************")
+            logger.info(f"TRANSACTION_LOG | conv_id={conv_id}")
+            logger.info(f"QUESTION: {text}")
+            logger.info(f"ANSWER: {response.reply}")
+            logger.info(f"TOTAL_LATENCY: {response.latency_ms/1000:.3f}s")
+            
+            # Consolidated Performance Table
+            from app.services.aidaan.performance import format_metrics_table
+            performance_table = format_metrics_table()
+            logger.info("\n" + performance_table)
+            logger.info("*************")
+            
             return response
 
         # Fallback response if no agent could handle the request

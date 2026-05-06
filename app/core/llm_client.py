@@ -178,29 +178,34 @@ class LLMClient:
                     )
                 elapsed = self._elapsed_ms(started)
                 tokens = "N/A"
+                finish_reason = "UNKNOWN"
                 if hasattr(response, "usage_metadata") and response.usage_metadata:
                     tokens = getattr(response.usage_metadata, "total_token_count", "N/A")
+                
+                if response.candidates:
+                    finish_reason = getattr(response.candidates[0], "finish_reason", "UNKNOWN")
                 
                 # Record in performance tracker
                 from app.services.aidaan.performance import record_metric
                 record_metric(
                     component=f"LLM ({stage})",
                     latency=elapsed/1000,
-                    details=f"Model: {model}",
+                    details=f"Model: {model} | finish_reason={finish_reason}",
                     tokens=str(tokens)
                 )
 
                 logger.info(
-                    "[LLMClient][%s] %s completed | model=%s | latency_ms=%s | tokens=%s | attempt=%s",
+                    "[LLMClient][%s] %s completed | model=%s | latency_ms=%s | tokens=%s | finish_reason=%s | attempt=%s",
                     trace_id or "no-trace",
                     stage,
                     model,
                     elapsed,
                     tokens,
+                    finish_reason,
                     attempt + 1,
                 )
-                logger.info(f"[TIMING] Gemini API call completed | stage={stage} | elapsed={elapsed/1000:.3f}s | tokens={tokens}")
-                logger.info(f"*************\nPERFORMANCE_SUMMARY|LLM_Generation|model={model}|tokens={tokens}|seconds={elapsed/1000:.3f}\n*************")
+                logger.info(f"[TIMING] Gemini API call completed | stage={stage} | elapsed={elapsed/1000:.3f}s | tokens={tokens} | finish_reason={finish_reason}")
+                logger.info(f"*************\nPERFORMANCE_SUMMARY|LLM_Generation|model={model}|tokens={tokens}|finish_reason={finish_reason}|seconds={elapsed/1000:.3f}\n*************")
                 return response
             except asyncio.TimeoutError:
                 elapsed = self._elapsed_ms(started)
@@ -714,13 +719,61 @@ class LLMClient:
 
         return cleaned
 
+    def _repair_json(self, json_str: str) -> str:
+        """
+        Attempt to repair a truncated JSON string by closing strings and brackets.
+        """
+        stack = []
+        is_in_string = False
+        is_escaped = False
+        
+        for char in json_str:
+            if is_escaped:
+                is_escaped = False
+                continue
+            if char == '\\':
+                is_escaped = True
+                continue
+            if char == '"':
+                is_in_string = not is_in_string
+                continue
+            if not is_in_string:
+                if char == '{':
+                    stack.append('}')
+                elif char == '[':
+                    stack.append(']')
+                elif char == '}':
+                    if stack and stack[-1] == '}':
+                        stack.pop()
+                elif char == ']':
+                    if stack and stack[-1] == ']':
+                        stack.pop()
+        
+        repaired = json_str
+        if is_in_string:
+            repaired += '"'
+        while stack:
+            repaired += stack.pop()
+        
+        return repaired
+
     def _extract_json(self, raw_text: str) -> Dict[str, Any]:
         if not raw_text or not raw_text.strip():
             raise ValueError("Empty or whitespace text provided for JSON extraction")
 
         clean = re.sub(r"```(?:json)?", "", raw_text).replace("```", "").strip()
+        
+        # Try greedy match first
         match = re.search(r"\{.*\}", clean, re.DOTALL)
-        payload = match.group(0) if match else clean
+        if match:
+            payload = match.group(0)
+        else:
+            # If no closing brace, find the first '{' and use the rest as payload
+            start = clean.find('{')
+            if start != -1:
+                payload = clean[start:]
+            else:
+                payload = clean
         
         try:
             # Phase 4 Fix: Ensure proper Unicode handling for Hindi/Gujarati/Marathi text
@@ -728,12 +781,20 @@ class LLMClient:
             parsed = json.loads(payload)
             
             # Validate and sanitize the parsed JSON to ensure it's serializable
-            # This prevents Unicode escape issues in downstream processing
             validated = json.loads(json.dumps(parsed, ensure_ascii=False))
             return validated
-        except json.JSONDecodeError as exc:
-            logger.error("[LLMClient] JSON parsing failed for payload: %s", payload[:200])
-            raise exc
+        except json.JSONDecodeError:
+            # Attempt repair if parsing fails
+            logger.info("[LLMClient] JSON parsing failed, attempting repair for payload: %s", payload[:100])
+            repaired = self._repair_json(payload)
+            try:
+                parsed = json.loads(repaired)
+                validated = json.loads(json.dumps(parsed, ensure_ascii=False))
+                logger.info("[LLMClient] JSON repair successful")
+                return validated
+            except json.JSONDecodeError as exc:
+                logger.error("[LLMClient] JSON parsing failed even after repair for payload: %s", payload[:200])
+                raise exc
 
     @staticmethod
     def _is_valid_unicode_escapes(text: str) -> bool:
@@ -1142,18 +1203,14 @@ class LLMClient:
                     raw = self._repair_unicode_escapes(raw)
 
                 # Guard: if JSON is truncated (unterminated string), attempt recovery
-                # by finding the last complete JSON object boundary
+                # by finding the last complete JSON object boundary or using repair logic
                 if not raw.endswith("}"):
                     logger.warning(
-                        "[LLMClient][%s] MCP response appears truncated (len=%s). Attempting JSON recovery.",
+                        "[LLMClient][%s] MCP response appears truncated (len=%s). Relying on robust repair logic.",
                         trace_id or "no-trace",
                         len(raw),
                     )
-                    # Find the last valid closing brace
-                    last_brace = raw.rfind("}")
-                    if last_brace > 0:
-                        raw = raw[: last_brace + 1]
-                        logger.info("[LLMClient][%s] JSON recovery: trimmed to last '}'", trace_id or "no-trace")
+                    # We no longer manually trim here; _extract_json's _repair_json will handle it.
 
                 parsed = self._extract_json(raw)
                 # NOTE: DLP redaction on LLM-generated responses is intentionally skipped.

@@ -368,6 +368,37 @@ class CoordinatorAgent(BaseAgent):
             )
             return decision
 
+        # NEW: FX Spread Detection (MUST come before general market keywords)
+        fx_spread_patterns = [
+            r"\b(bid.?ask|bid/ask|spread)\b.*\b(eur|usd|gbp|jpy|chf|aud|cad|nzd|forex|fx|currency|pair)\b",
+            r"\b(eur|usd|gbp|jpy|chf|aud|cad|nzd)\s*/\s*(eur|usd|gbp|jpy|chf|aud|cad|nzd)\b.*\b(spread|bid|ask|quote)\b",
+            r"\bcurrent\b.*\b(bid.?ask|spread)\b.*\b(eur|usd|gbp|jpy|forex|fx)\b",
+            r"\b(forex|fx|currency)\b.*\b(spread|bid.?ask|quote)\b",
+        ]
+        
+        if any(re.search(p, lowered, re.IGNORECASE) for p in fx_spread_patterns):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "FX spread query matched heuristic.",
+                sub_intent="fx_analysis",
+                confidence=0.97,
+            ), "fx_spread_keyword")
+
+        # NEW: FX Exchange Rate Detection (for simple rate queries)
+        fx_rate_patterns = [
+            r"\b(exchange rate|conversion rate|rate)\b.*\b(eur|usd|gbp|jpy|chf|aud|cad|nzd)\b",
+            r"\b(eur|usd|gbp|jpy|chf|aud|cad|nzd)\s*(to|vs|versus|against)\s*(eur|usd|gbp|jpy|chf|aud|cad|nzd)\b",
+            r"\bconvert\b.*\b(eur|usd|gbp|jpy|chf|aud|cad|nzd)\b",
+        ]
+        
+        if any(re.search(p, lowered, re.IGNORECASE) for p in fx_rate_patterns):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "FX exchange rate query matched heuristic.",
+                sub_intent="fx_analysis",
+                confidence=0.95,
+            ), "fx_rate_keyword")
+
         continue_set = {
             "yes", "y", "haan", "ha", "han", "yep", "yeah", "ok", "okay", "sure",
             "continue", "proceed", "do it", "go ahead"

@@ -40,10 +40,11 @@ class MarketAgent(BaseAgent):
 
     def _resolve_execution_plan(self, *, sub_intent: str, control_signal: str, text: str) -> Dict[str, Any]:
         """
-        Decide whether the current market request should use no tools, a lightweight
-        model-only path, or the full tool-backed reasoning flow.
+        Enhanced execution plan resolver with explicit sentiment detection.
         """
         normalized_text = self._normalize_market_text(text)
+        
+        # Detect freshness requirements
         freshness_requested = bool(
             re.search(r"\b(today|now|latest|current|live|realtime|real-time)\b", normalized_text)
         )
@@ -59,13 +60,47 @@ class MarketAgent(BaseAgent):
         )
         requires_freshness = freshness_requested and not freshness_negated
 
+        # NEW: Explicit sentiment detection (HIGHEST PRIORITY)
+        sentiment_keywords = [
+            r"\bsentiment\b",
+            r"\bfinbert\b",
+            r"\bbullish\b",
+            r"\bbearish\b",
+            r"\bnews\b",
+            r"\bheadlines?\b",
+            r"\bmarket mood\b",
+            r"\boptimistic\b",
+            r"\bpessimistic\b",
+            r"\boutlook\b",
+            r"\bfeeling\b.*\bmarket\b",
+            r"\bmarket\b.*\bfeeling\b",
+        ]
+        
+        sentiment_requested = any(
+            re.search(pattern, normalized_text) for pattern in sentiment_keywords
+        )
+        
+        # If sentiment is explicitly requested, ALWAYS enable tools
+        if sentiment_requested:
+            logger.info(
+                "[MarketAgent] 🎯 SENTIMENT DETECTED - forcing tool mode | text_preview=%s",
+                text[:100]
+            )
+            return {
+                "tool_mode": "full",
+                "model_name": settings.VERTEX_AI_MODEL_NAME,
+                "fast_path_kind": None,
+                "reason": "Sentiment analysis requires FinBERT + news tools",
+            }
+
+        # Default plan
         plan = {
             "tool_mode": "full",
             "model_name": settings.VERTEX_AI_MODEL_NAME,
             "fast_path_kind": None,
         }
 
-        # Only use Pro for truly complex multi-step reasoning
+        # Heavy reasoning detection
         HEAVY_REASONING_PATTERNS = [
             r"\bdcf\b", r"\bwacc\b", r"\bblack.?swan\b", r"\bvar\b.*\bscenario\b",
             r"\bcorrelation.?matrix\b", r"\bdelta.?neutral\b", r"\bsensitivity.?matrix\b",
@@ -78,6 +113,7 @@ class MarketAgent(BaseAgent):
         if needs_heavy_reasoning:
             plan["model_name"] = settings.VERTEX_AI_REASONING_MODEL_NAME
 
+        # Control signal handling
         if control_signal == "stop":
             plan.update({
                 "tool_mode": "none",
@@ -90,22 +126,22 @@ class MarketAgent(BaseAgent):
                 "model_name": settings.VERTEX_AI_MODEL_NAME,
                 "fast_path_kind": "clarify_response",
             })
-        elif sub_intent == "education" and not requires_freshness:
-            # CRITICAL FIX: Educational queries should ALWAYS have tools available
-            # The model needs tools to provide accurate, data-backed answers
-            # Only skip tools for pure conversational control signals (stop/clarify)
+        elif sub_intent == "education" and not requires_freshness and not sentiment_requested:
+            # Educational queries without freshness or sentiment can use model-only path
+            # BUT: Keep tools available for accuracy (model can choose to use them)
             logger.info(
                 "[MarketAgent] 🔧 education mode WITH tools enabled for accuracy"
             )
             # Keep tool_mode as "full" - do NOT set to "none"
 
         logger.info(
-            "[MarketAgent] Execution plan resolved | sub_intent=%s control=%s tool_mode=%s model=%s fast_path=%s freshness_requested=%s freshness_negated=%s requires_freshness=%s",
+            "[MarketAgent] Execution plan resolved | sub_intent=%s control=%s tool_mode=%s model=%s fast_path=%s sentiment_requested=%s freshness_requested=%s freshness_negated=%s requires_freshness=%s",
             sub_intent,
             control_signal,
             plan["tool_mode"],
             plan["model_name"],
             plan["fast_path_kind"],
+            sentiment_requested,
             freshness_requested,
             freshness_negated,
             requires_freshness,
@@ -126,6 +162,9 @@ class MarketAgent(BaseAgent):
 
     @staticmethod
     def _build_market_system_instruction(sub_intent: str, control_signal: str) -> str:
+        """
+        Enhanced system instruction with explicit sentiment handling.
+        """
         base = (
             Prompts.TRADER_SYSTEM_INSTRUCTION
             + "\nRole: Senior Interbank analyst."
@@ -141,7 +180,12 @@ class MarketAgent(BaseAgent):
             + " 5. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
             + " 6. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity.\n"
             + " 7. ANTI-HALLUCINATION: NEVER fabricate, invent, or estimate specific financial numbers (prices, yields, rates, volumes, EPS, P/E ratios) without tool data. If tools are not available and the user asks for specific numbers, explicitly state: 'I do not have live data for this — please use the fetch tools or provide the data.' Do NOT make up plausible-looking tables or figures.\n"
-            + " 8. SENTIMENT REQUESTS: If the user asks for 'FinBERT sentiment', 'news sentiment', or 'latest news' for ANY instrument — you MUST call `get_market_news` with the appropriate ticker. Do NOT skip this step or claim you cannot do it. The tool handles FinBERT automatically.\n"
+            + " 8. **SENTIMENT REQUESTS (CRITICAL)**: If the user asks for 'sentiment', 'FinBERT', 'news sentiment', 'bullish/bearish', 'latest news', 'headlines', or 'market mood' for ANY instrument:\n"
+            + "    - You MUST call `get_market_news` with the appropriate ticker (e.g., tickers='MSFT' for Microsoft)\n"
+            + "    - Do NOT skip this step or claim you cannot do it\n"
+            + "    - The tool automatically runs FinBERT sentiment analysis on the headlines\n"
+            + "    - Even if the query also asks for other data (price, volume, etc.), you MUST still call get_market_news\n"
+            + "    - Example: 'Compare sentiment of MSFT to its volume' → Call BOTH get_market_news AND get_daily_series\n"
             + " 9. RISK AGENT: If the user says 'consult risk agent', 'check desk limit', or 'does this breach' — you MUST call `consult_specialist_agent` with target_agent='risk'. Do NOT skip this step.\n"
         )
 

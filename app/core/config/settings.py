@@ -11,6 +11,7 @@ import logging
 
 from typing import Optional
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import (
     BaseSettings,
     SettingsConfigDict
@@ -82,7 +83,13 @@ class Settings(BaseSettings):
     ADVISORY_CONFIDENCE_THRESHOLD: float = 0.85
     ENABLE_STRATEGIC_DATA_REDACTION: bool = True
     ENABLE_PII_REDACTION: bool = True
-    
+
+    # News Query Optimization
+    NEWS_ARTICLE_LIMIT: int = Field(
+        default=20,
+        description="Maximum number of news articles to fetch and analyze (default: 20, max: 50)"
+    )
+
     # --- Vertex AI in-DB (google_ml.predict_row) summaries ---
     # These are expensive and add seconds of latency to prompt-context assembly.
     # Keep disabled by default; enable only for dedicated diagnostic/admin flows.

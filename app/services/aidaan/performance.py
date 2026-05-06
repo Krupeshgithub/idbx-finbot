@@ -1,6 +1,13 @@
 import contextvars
 import time
+import logging
 from typing import Dict, List, Any, Optional
+
+# Standard logger for module tracking (stdout)
+logger = logging.getLogger(__name__)
+
+# Dedicated performance logger (performance.log)
+perf_logger = logging.getLogger("performance")
 
 class PerformanceMetric:
     def __init__(self, component: str, details: str = "", tokens: str = "N/A"):
@@ -65,3 +72,14 @@ def format_metrics_table() -> str:
     rows.append(f"| **Total Pipeline Latency** | **~{total_tokens}** | **~{total_latency:.3f}s** | **End-to-End processing time.** |")
     
     return "\n".join([header, separator] + rows)
+
+def log_performance(summary: str):
+    """
+    Unified entry point for performance logging.
+    Logs to stdout (via standard logger) and to performance.log (via perf_logger).
+    """
+    # 1. Standard log (for stdout/app.log)
+    logger.info(f"*************\n{summary}\n*************")
+    
+    # 2. Performance log (for performance.log)
+    perf_logger.info(summary)

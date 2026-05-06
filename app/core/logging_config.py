@@ -105,13 +105,18 @@ def _setup_json_logging(level: int):
 
 def _setup_file_logging(level: int):
     """Save logs to a persistent file in the logs/ directory."""
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    # Use absolute path to ensure logs are created in the project root
+    project_root = Path(__file__).resolve().parent.parent.parent
+    log_dir = project_root / "logs"
     
-    file_path = os.path.join(log_dir, "app.log")
+    if not log_dir.exists():
+        log_dir.mkdir(parents=True, exist_ok=True)
+    
+    file_path = log_dir / "app.log"
     fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-    handler = logging.FileHandler(file_path)
+    
+    # Use mode='a' (append) and delay=False (open immediately)
+    handler = logging.FileHandler(file_path, mode='a', encoding='utf-8')
     handler.setFormatter(logging.Formatter(fmt=fmt))
     
     root_logger = logging.getLogger()
@@ -120,16 +125,18 @@ def _setup_file_logging(level: int):
 
 def _setup_performance_logging():
     """Setup a dedicated logger for performance metrics and transaction tables."""
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    project_root = Path(__file__).resolve().parent.parent.parent
+    log_dir = project_root / "logs"
+    
+    if not log_dir.exists():
+        log_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = os.path.join(log_dir, "performance.log")
+    file_path = log_dir / "performance.log"
     
     # We want a clean output without the standard log prefixes (asctime, levelname, etc.)
     # because the transaction table is already formatted.
     fmt = "%(asctime)s | %(message)s"
-    handler = logging.FileHandler(file_path)
+    handler = logging.FileHandler(file_path, mode='a', encoding='utf-8')
     handler.setFormatter(logging.Formatter(fmt=fmt))
     
     perf_logger = logging.getLogger("performance")

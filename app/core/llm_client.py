@@ -186,7 +186,7 @@ class LLMClient:
                     finish_reason = getattr(response.candidates[0], "finish_reason", "UNKNOWN")
                 
                 # Record in performance tracker
-                from app.services.aidaan.performance import record_metric
+                from app.services.aidaan.performance import record_metric, log_performance
                 record_metric(
                     component=f"LLM ({stage})",
                     latency=elapsed/1000,
@@ -205,7 +205,7 @@ class LLMClient:
                     attempt + 1,
                 )
                 logger.info(f"[TIMING] Gemini API call completed | stage={stage} | elapsed={elapsed/1000:.3f}s | tokens={tokens} | finish_reason={finish_reason}")
-                logger.info(f"*************\nPERFORMANCE_SUMMARY|LLM_Generation|model={model}|tokens={tokens}|finish_reason={finish_reason}|seconds={elapsed/1000:.3f}\n*************")
+                log_performance(f"PERFORMANCE_SUMMARY|LLM_Generation|model={model}|tokens={tokens}|finish_reason={finish_reason}|seconds={elapsed/1000:.3f}")
                 return response
             except asyncio.TimeoutError:
                 elapsed = self._elapsed_ms(started)

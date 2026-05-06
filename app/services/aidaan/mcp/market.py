@@ -66,7 +66,7 @@ async def _fetch_av(params: Dict[str, Any]) -> Dict[str, Any]:
             )
             
             # Record in performance tracker
-            from app.services.aidaan.performance import record_metric
+            from app.services.aidaan.performance import record_metric, log_performance
             record_metric(
                 component="Alpha Vantage Fetch",
                 latency=elapsed_ms/1000,
@@ -74,7 +74,7 @@ async def _fetch_av(params: Dict[str, Any]) -> Dict[str, Any]:
                 tokens="N/A"
             )
 
-            logger.info(f"*************\nPERFORMANCE_SUMMARY|Alpha_Vantage|fn={fn}|symbol={symbol}|tokens=N/A|seconds={elapsed_ms/1000:.3f}\n*************")
+            log_performance(f"PERFORMANCE_SUMMARY|Alpha_Vantage|fn={fn}|symbol={symbol}|tokens=N/A|seconds={elapsed_ms/1000:.3f}")
             return data
     except Exception as exc:
         logger.error("[AV] ❌ HTTP fetch failed | fn=%s symbol=%s | %s", fn, symbol, exc)

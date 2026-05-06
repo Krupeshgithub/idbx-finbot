@@ -93,7 +93,7 @@ class RuntimeContextService:
         """
         return operational_data_service.get_recent_history(conversation_id, limit=limit)
 
-    def _truncate_payload(self, data: Any, max_len: int = 500) -> Any:
+    def _truncate_payload(self, data: Any, max_len: int = 400) -> Any:
         """
         Recursively truncate large strings or lists in a JSON-like object.
         """
@@ -102,10 +102,26 @@ class RuntimeContextService:
                 return data[:max_len] + "... [TRUNCATED]"
             return data
         if isinstance(data, list):
+            # Limit list size to 10 items
             return [self._truncate_payload(item, max_len) for item in data[:10]]
         if isinstance(data, dict):
-            return {k: self._truncate_payload(v, max_len) for k, v in data.items()}
+            # Remove keys that are known to be heavy
+            filtered_dict = {k: v for k, v in data.items() if k not in ["content_vector", "embedding_vector"]}
+            return {k: self._truncate_payload(v, max_len) for k, v in filtered_dict.items()}
         return data
+
+    def _clean_history_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Remove heavy metadata and truncate content for history messages.
+        """
+        cleaned = {
+            "role": item.get("role"),
+            "agent": item.get("agent_name"),
+            "content": self._truncate_payload(item.get("content"), max_len=800),
+        }
+        if item.get("is_semantic_memory"):
+            cleaned["is_semantic_memory"] = True
+        return cleaned
 
     def get_operational_context(
         self,
@@ -125,9 +141,18 @@ class RuntimeContextService:
             "source_schema": None,
         }
         if username:
-            payload.update(operational_data_service.get_operational_snapshot(username))
+            snapshot = operational_data_service.get_operational_snapshot(username)
+            # OPTIMIZATION: Limit counterparties to top 10 to save tokens
+            if snapshot.get("counterparties"):
+                snapshot["counterparties"] = snapshot["counterparties"][:10]
+            payload.update(snapshot)
+            
         if conversation_id:
             bundle = operational_data_service.get_conversation_bundle(conversation_id, limit=5)
+            
+            # OPTIMIZATION: Remove 'recent_messages' from bundle to avoid redundancy with hybrid history
+            bundle.pop("recent_messages", None)
+            
             # REDACTION: Tool results and audit payloads can be huge and cause context leakage/hallucination.
             # We truncate them here to keep the prompt focused on intent and state, not raw data dumps.
             if "recent_tool_invocations" in bundle:
@@ -231,6 +256,9 @@ class RuntimeContextService:
             logger.info(f"[TIMING] Context cache MISS | conv_id={conversation_id} | fetching from DB (Hybrid Mode)")
             # Use Hybrid History to get both recent and semantically relevant messages
             history = self.get_hybrid_history(conversation_id, query_text=base_prompt)
+            # OPTIMIZATION: Clean history items to remove heavy metadata and truncate content
+            cleaned_history = [self._clean_history_item(msg) for msg in history]
+            
             operational = self.get_operational_context(
                 username=username,
                 conversation_id=conversation_id,
@@ -238,7 +266,7 @@ class RuntimeContextService:
             if not history and not any(operational.values()):
                 return base_prompt
 
-            history_block = _json_dump(history)
+            history_block = _json_dump(cleaned_history)
             ops_block = _json_dump(operational)
             continuity_block = _json_dump(self.build_continuity_guidance(history))
             _session_ctx_cache.set(conversation_id, username, (history_block, ops_block, continuity_block))

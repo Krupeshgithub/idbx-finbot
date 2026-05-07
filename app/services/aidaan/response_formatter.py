@@ -8,9 +8,16 @@ structured insights, and professional presentation.
 from typing import List, Optional, Dict, Any
 
 
+def _normalize_data_sources(data_source: str | List[str]) -> str:
+    if isinstance(data_source, list):
+        cleaned = [source.strip() for source in data_source if source and source.strip()]
+        return ", ".join(dict.fromkeys(cleaned))
+    return str(data_source).strip()
+
+
 def format_response_with_provenance(
     content: str,
-    data_source: str,
+    data_source: str | List[str],
     market_insight: Optional[str] = None,
     trade_implication: Optional[str] = None,
     key_insights: Optional[List[str]] = None,
@@ -50,10 +57,7 @@ def format_response_with_provenance(
         )
     """
     response_parts = []
-    
-    # Data Provenance (at the top for transparency)
-    response_parts.append(f"**Data Source:** {data_source}\n")
-    response_parts.append("---\n\n")
+    normalized_source = _normalize_data_sources(data_source)
     
     # Market Insight
     if market_insight:
@@ -73,15 +77,16 @@ def format_response_with_provenance(
     # Main Content
     response_parts.append(content)
     
-    # Similarity Score (for semantic search results)
-    if similarity_score is not None:
-        response_parts.append(f"\n\n---\n**Confidence Score:** {similarity_score:.1%}")
-    
-    # Additional Metadata
-    if metadata:
+    # Additional Metadata (optional, non-technical presentation only)
+    if metadata and metadata.get("display_additional_info"):
         response_parts.append("\n\n**Additional Information:**\n")
         for key, value in metadata.items():
+            if key == "display_additional_info":
+                continue
             response_parts.append(f"• {key}: {value}\n")
+
+    # Mandatory provenance footer for transparency.
+    response_parts.append(f"\n\n**IDBX Data Provenance:** {normalized_source}")
     
     return "".join(response_parts)
 
@@ -116,25 +121,14 @@ def format_corporate_knowledge_response(
     # Extract metadata
     metadata_json = top_result.get('metadata_json', {})
     
-    # Build key insights from metadata
-    key_insights = []
-    if 'priority' in metadata_json:
-        key_insights.append(f"Priority: {metadata_json['priority'].upper()}")
-    if 'person' in metadata_json:
-        key_insights.append(f"Person: {metadata_json['person']}")
-    if 'title' in metadata_json:
-        key_insights.append(f"Title: {metadata_json['title']}")
-    if 'technology' in metadata_json:
-        key_insights.append(f"Technology: {metadata_json['technology']}")
-    
-    # Add category
-    key_insights.append(f"Category: {top_result['category'].replace('_', ' ').title()}")
-    
+    # Keep corporate answers concise and non-technical for end users.
+    _ = metadata_json
+
     return format_response_with_provenance(
         content=content,
         data_source="IDBX Corporate Knowledge Base v1.0",
-        key_insights=key_insights if key_insights else None,
-        similarity_score=top_result.get('similarity')
+        key_insights=None,
+        similarity_score=None
     )
 
 

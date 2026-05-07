@@ -310,21 +310,18 @@ class OperationalAgent(BaseAgent):
                 if not results:
                     logger.info("[OperationalAgent] No corporate knowledge results found | query=%s", text[:100])
                     return self.build_message_response(
-                        reply=f"**Data Source:** {DataSource.IDBX_CORPORATE_KB}\n---\n\nI don't have specific information about '{text}' in my corporate knowledge base. Please contact your IDBX administrator for more details.",
-                        bullets=["No matching corporate knowledge found", "Try rephrasing your question"],
+                        reply=(
+                            f"I could not find a direct entry for '{text}' right now. "
+                            f"Please share a little more context and I will answer in detail.\n\n"
+                            f"**IDBX Data Provenance:** {DataSource.IDBX_CORPORATE_KB}"
+                        ),
+                        bullets=[],
                         conversation_id=conversation_id,
                         model_info=self.get_model_info(model_override="corporate-knowledge-empty"),
                     )
                 
                 # Format response with data provenance
                 formatted_response = format_corporate_knowledge_response(results, text)
-                
-                # Build bullets from results
-                bullets = []
-                for idx, result in enumerate(results[:2], 1):
-                    category = result['category'].replace('_', ' ').title()
-                    similarity = result.get('similarity', 0)
-                    bullets.append(f"Match #{idx}: {category} (Confidence: {similarity:.1%})")
                 
                 logger.info(
                     "[OperationalAgent] Corporate knowledge response built | results=%s top_similarity=%.2f",
@@ -334,7 +331,7 @@ class OperationalAgent(BaseAgent):
                 
                 return self.build_message_response(
                     reply=formatted_response,
-                    bullets=bullets,
+                    bullets=[],
                     conversation_id=conversation_id,
                     model_info=self.get_model_info(model_override="corporate-knowledge-semantic"),
                 )

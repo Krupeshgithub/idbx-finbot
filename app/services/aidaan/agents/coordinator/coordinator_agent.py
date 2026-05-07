@@ -428,8 +428,10 @@ class CoordinatorAgent(BaseAgent):
             "security boundaries", "execution boundaries",
             "aidann capabilities", "what can aidann do", "aidann features"
         ]
-        
-        if any(keyword in lowered for keyword in corporate_keywords):
+
+        has_brand_reference = bool(re.search(r"\b(idbx|aidann)\b", lowered))
+
+        if any(keyword in lowered for keyword in corporate_keywords) or has_brand_reference:
             return _log_heuristic(self._default_routing_decision(
                 "operational",
                 "Corporate knowledge query matched heuristic (IDBX/AIDANN internal information).",

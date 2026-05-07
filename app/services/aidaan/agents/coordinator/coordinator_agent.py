@@ -1003,6 +1003,16 @@ class CoordinatorAgent(BaseAgent):
                 context=context,
                 tool_callback=tool_callback,
             )
+
+            # ------------------------------------------------------------------
+            # Mandatory IDBX Data Provenance footer (end-user friendly)
+            # ------------------------------------------------------------------
+            if response and isinstance(getattr(response, "reply", None), str):
+                has_provenance = "**IDBX Data Provenance:**" in response.reply
+                if not has_provenance:
+                    # Only append when we can state a concrete source (avoid misleading footers).
+                    if agent_id == "market":
+                        response.reply = response.reply.rstrip() + "\n\n**IDBX Data Provenance:** Alpha Vantage Live Feed"
             
             agent_elapsed = time.monotonic() - agent_start
             logger.info(f"[TIMING] Agent {agent_id} completed | elapsed={agent_elapsed:.3f}s")

@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from app.services.aidaan.mcp.shared import mcp
+from app.core.config.top_stocks_config import top_stocks_config
 
 
 logging.basicConfig(level=logging.INFO)
@@ -1018,6 +1019,17 @@ async def get_top_stocks_by_market_cap(limit: int = 10) -> Dict[str, Any]:
         "[MCP:get_top_stocks_by_market_cap] 📊 Fetching top %s stocks by market cap (fetching %s for buffer)",
         limit, fetch_count
     )
+    
+    results = []
+    
+    for ticker in top_stocks_config.US_MEGA_CAPS[:fetch_count]:
+        try:
+            # Fetch company overview (includes market cap)
+            overview = await get_company_overview(ticker)
+            
+            if "error" in overview:
+                logger.warning(
+                    "[MCP:get_top_stocks_by_market_cap] ⚠️ Skipping %s: %s",
                     ticker, overview.get("error")
                 )
                 continue
@@ -1090,9 +1102,9 @@ async def get_top_stocks_by_volume(limit: int = 10) -> Dict[str, Any]:
     )
     
     results = []
-    fetch_count = min(limit * 2, len(US_MEGA_CAPS))
+    fetch_count = min(limit * 2, len(top_stocks_config.US_MEGA_CAPS))
     
-    for ticker in US_MEGA_CAPS[:fetch_count]:
+    for ticker in top_stocks_config.US_MEGA_CAPS[:fetch_count]:
         try:
             # Get recent daily data to extract volume
             daily_data = await get_daily_series(ticker, days=1)
@@ -1163,9 +1175,9 @@ async def get_top_gainers(limit: int = 10) -> Dict[str, Any]:
     )
     
     results = []
-    fetch_count = min(limit * 2, len(US_MEGA_CAPS))
+    fetch_count = min(limit * 2, len(top_stocks_config.US_MEGA_CAPS))
     
-    for ticker in US_MEGA_CAPS[:fetch_count]:
+    for ticker in top_stocks_config.US_MEGA_CAPS[:fetch_count]:
         try:
             daily_data = await get_daily_series(ticker, days=2)
             
@@ -1240,9 +1252,9 @@ async def get_top_losers(limit: int = 10) -> Dict[str, Any]:
     )
     
     results = []
-    fetch_count = min(limit * 2, len(US_MEGA_CAPS))
+    fetch_count = min(limit * 2, len(top_stocks_config.US_MEGA_CAPS))
     
-    for ticker in US_MEGA_CAPS[:fetch_count]:
+    for ticker in top_stocks_config.US_MEGA_CAPS[:fetch_count]:
         try:
             daily_data = await get_daily_series(ticker, days=2)
             

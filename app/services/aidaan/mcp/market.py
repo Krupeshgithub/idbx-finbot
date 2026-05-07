@@ -19,6 +19,34 @@ logger = logging.getLogger("mcp_alphavantage_pro")
 BASE_URL = "https://www.alphavantage.co/query"
 
 
+def _normalize_ticker(ticker: str) -> str:
+    """
+    Normalize ticker symbols for Alpha Vantage API compatibility.
+    
+    Alpha Vantage accepts: alphanumeric characters, colons, underscores, and hyphens.
+    This function converts common ticker formats to API-compatible format.
+    
+    Examples:
+        CUB.BSE -> CUB:BSE (international exchange suffix)
+        AAPL -> AAPL (no change needed)
+        BRK.B -> BRK:B (class suffix)
+    
+    Args:
+        ticker: Raw ticker symbol
+        
+    Returns:
+        Normalized ticker symbol compatible with Alpha Vantage API
+    """
+    if not ticker:
+        return ticker
+    
+    # Replace periods with colons (common in international tickers and share classes)
+    # Alpha Vantage API error: "Ticker can only contain alphanumeric characters, colons, underscores, and hyphens"
+    normalized = ticker.replace(".", ":")
+    
+    return normalized
+
+
 def _is_simulatable_error(err: str) -> bool:
     low = (err or "").lower()
     return ("rate limit" in low) or ("not configured" in low)
@@ -89,6 +117,8 @@ async def search_ticker(keywords: str) -> Dict[str, Any]:
     """
     Search for symbols or company names
     """
+    # Note: search_ticker uses keywords, not ticker symbols, so normalization is not needed here
+    # The API will return results with their native ticker format
     data = await _fetch_av({
         "function": "SYMBOL_SEARCH",
         "keywords": keywords
@@ -128,6 +158,7 @@ async def get_stock_quote(symbol: str) -> Dict[str, Any]:
     """
     Get real-time quote for a symbol.
     """
+    symbol = _normalize_ticker(symbol)
     data = await _fetch_av({
         "function": "GLOBAL_QUOTE",
         "symbol": symbol.upper()
@@ -167,6 +198,7 @@ async def get_daily_series(
     Get daily historical stock prices (Open, High, Low, Close, Volume).
     Use 'days' to specify how many recent days of data to return.
     """
+    symbol = _normalize_ticker(symbol)
     raw = await _fetch_av(
         {
             "function": "TIME_SERIES_DAILY",
@@ -227,6 +259,7 @@ async def get_weekly_series(
     Get weekly historical stock prices.
     Use 'weeks' to specify how many recent weeks of data to return.
     """
+    symbol = _normalize_ticker(symbol)
     raw = await _fetch_av({
         "function": "TIME_SERIES_WEEKLY",
         "symbol":symbol
@@ -270,6 +303,7 @@ async def get_intraday_series(
     """
     Intraday OHLCV (e.g., 1min/5min/15min/30min/60min). Returns latest `points` rows.
     """
+    symbol = _normalize_ticker(symbol)
     interval = interval.strip()
     raw = await _fetch_av(
         {
@@ -327,6 +361,7 @@ async def get_monthly_series(
     """
     Monthly OHLCV. Returns latest `months` rows.
     """
+    symbol = _normalize_ticker(symbol)
     raw = await _fetch_av({
         "function": "TIME_SERIES_MONTHLY",
         "symbol": symbol.upper()
@@ -372,6 +407,7 @@ async def get_company_overview(symbol: str) -> Dict[str, Any]:
     """
     Get company fundamental (Sector, PE, Market Cap, etc)
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av({
         "function": "OVERVIEW",
         "symbol": symbol
@@ -383,6 +419,7 @@ async def get_earnings(symbol: str) -> Dict[str, Any]:
     """
     Get historical and projected earnings (EPS)
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av({
         "function": "EARNINGS",
         "symbol": symbol
@@ -395,6 +432,7 @@ async def get_income_statement(symbol: str) -> Dict[str, Any]:
     Get the annual and quarterly income statements for a company.
     Includes revenue, gross profit, net income, etc...
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av({
         "function": "INCOME_STATEMENT",
         "symbol": symbol
@@ -407,6 +445,7 @@ async def get_balance_sheet(symbol: str) -> Dict[str, Any]:
     get the annual and quarterly balance sheets for a company.
     Includes assets, liabilities, and equity.
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av({
         "function": "BALANCE_SHEET",
         "symbol": symbol
@@ -419,6 +458,7 @@ async def get_cash_flow(symbol: str) -> Dict[str, Any]:
     Get the annual and quarterly cash flow statements for a company.
     Includes operating, investing, and financing cash flows.
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av({
         "function": "CASH_FLOW",
         "symbol": symbol
@@ -578,7 +618,8 @@ async def get_crypto_daily_series(
         parts = symbol.split("/", 1)
         symbol = parts[0].strip()
         market = parts[1].strip() if len(parts) > 1 else market
-
+    
+    symbol = _normalize_ticker(symbol)
     raw = await _fetch_av(
         {
             "function": "DIGITAL_CURRENCY_DAILY",
@@ -704,6 +745,8 @@ async def get_market_news(
     
     Tickers can be comma-separated. For crypto use prefix CRYPTO: e.g. "CRYPTO:BTC".
     For FX use prefix FOREX: e.g. "FOREX:USD".
+    For international stocks with exchange suffixes, use period or colon: e.g. "CUB.BSE" or "CUB:BSE"
+    (periods are automatically converted to colons for API compatibility).
     """
     if limit is None:
         from app.core.config.settings import settings
@@ -717,7 +760,7 @@ async def get_market_news(
         "limit": limit  # Use configurable limit
     }
 
-    # Auto-prefix crypto symbols
+    # Auto-prefix crypto symbols and normalize international tickers
     if tickers:
         _KNOWN_CRYPTO = {"BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "DOGE", "AVAX", "DOT", "MATIC"}
         normalized_tickers = []
@@ -727,7 +770,10 @@ async def get_market_news(
             if base in _KNOWN_CRYPTO and not t.upper().startswith("CRYPTO:"):
                 normalized_tickers.append(f"CRYPTO:{base}")
             else:
-                normalized_tickers.append(t)
+                # Replace periods with colons for international tickers (e.g., CUB.BSE -> CUB:BSE)
+                # Alpha Vantage doesn't accept periods in ticker format
+                t_normalized = t.replace(".", ":")
+                normalized_tickers.append(t_normalized)
         params["tickers"] = ",".join(normalized_tickers)
     if topics:
         params["topics"] = topics
@@ -817,6 +863,7 @@ async def get_technical_indicator(
     Generic technical indicator fetch (advanced).
     Supported functions (recommended): SMA, EMA, RSI, MACD, BBANDS.
     """
+    symbol = _normalize_ticker(symbol)
     valid = {"SMA", "EMA", "RSI", "MACD", "BBANDS"}
     fn = function.strip().upper()
     if fn not in valid:
@@ -857,6 +904,7 @@ async def get_sma(
     """
     SMA for a symbol
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av(
         {
             "function": "SMA",
@@ -878,6 +926,7 @@ async def get_ema(
     """
     EMA for a symbol.
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av(
         {
             "function": "EMA",
@@ -899,6 +948,7 @@ async def get_rsi(
     """
     RSI for a symbol
     """
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av(
         {
             "function": "RSI",
@@ -920,6 +970,7 @@ async def get_macd(
     signalperiod: int = 9,
 ) -> Dict[str, Any]:
     """MACD for a symbol."""
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av(
         {
             "function": "MACD",
@@ -944,6 +995,7 @@ async def get_bbands(
     matype: int = 0,
 ) -> Dict[str, Any]:
     """Bollinger Bands (BBANDS) for a symbol."""
+    symbol = _normalize_ticker(symbol)
     return await _fetch_av(
         {
             "function": "BBANDS",

@@ -417,7 +417,9 @@ class CoordinatorAgent(BaseAgent):
             ), "greeting")
 
         # Corporate Knowledge Detection (IDBX/AIDANN internal queries)
-        # Route questions about company, leadership, capabilities to operational agent
+        # Route questions about company, leadership, capabilities to operational agent.
+        # IMPORTANT: If the same turn also contains clear market/trading signals,
+        # do not force heuristic routing — let LLM router decide final ownership.
         corporate_keywords = [
             "chairman", "ceo", "leadership", "nicholas", "runcorn",
             "who made", "who created", "who built", "who developed",
@@ -429,9 +431,22 @@ class CoordinatorAgent(BaseAgent):
             "aidann capabilities", "what can aidann do", "aidann features"
         ]
 
+        market_or_trade_markers = {
+            "stock", "price", "quote", "ticker", "market", "news", "rsi", "macd",
+            "chart", "trend", "outlook", "buy", "sell", "aapl", "apple",
+        }
+        corporate_hit = any(keyword in lowered for keyword in corporate_keywords)
         has_brand_reference = bool(re.search(r"\b(idbx|aidann)\b", lowered))
+        market_hit = any(marker in lowered for marker in market_or_trade_markers)
 
-        if any(keyword in lowered for keyword in corporate_keywords) or has_brand_reference:
+        if (corporate_hit or has_brand_reference) and market_hit:
+            logger.info(
+                "[Coordinator] Mixed corporate + market query detected; deferring to LLM router | text_preview=%s",
+                lowered[:120],
+            )
+            return None
+
+        if corporate_hit:
             return _log_heuristic(self._default_routing_decision(
                 "operational",
                 "Corporate knowledge query matched heuristic (IDBX/AIDANN internal information).",

@@ -12,6 +12,10 @@ import contextvars
 
 logger = logging.getLogger(__name__)
 
+# Hard cap for memory usage: only last 3 user-assistant exchanges.
+_MAX_HISTORY_QA_PAIRS: int = 3
+_MAX_HISTORY_MESSAGES: int = _MAX_HISTORY_QA_PAIRS * 2
+
 # Context variables for Secure A2A session propagation (Zero Leakage)
 current_conversation_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_conversation_id", default="")
 current_username: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_username", default=None)
@@ -78,20 +82,49 @@ class RuntimeContextService:
     Collects compact context slices for prompts.
     """
 
+    @staticmethod
+    def _limit_recent_messages(history: List[Dict[str, Any]], max_messages: int = _MAX_HISTORY_MESSAGES) -> List[Dict[str, Any]]:
+        """
+        Keep only the most recent chat window for token-efficient continuity.
+        """
+        if not history:
+            return []
+        if len(history) <= max_messages:
+            return history
+        return history[-max_messages:]
+
     def get_hybrid_history(self, conversation_id: Optional[str], query_text: str) -> List[Dict[str, Any]]:
-        return operational_data_service.get_hybrid_history(
+        history = operational_data_service.get_hybrid_history(
             conversation_id,
             query_text=query_text,
             temporal_limit=settings.AIDAAN_HISTORY_WINDOW // 2,
             semantic_limit=settings.AIDAAN_HISTORY_WINDOW // 2,
         )
+        limited = self._limit_recent_messages(history, _MAX_HISTORY_MESSAGES)
+        logger.info(
+            "[RuntimeContext] Hybrid history window applied | original=%s limited=%s max_messages=%s",
+            len(history),
+            len(limited),
+            _MAX_HISTORY_MESSAGES,
+        )
+        return limited
 
-    def get_recent_history(self, conversation_id: Optional[str], limit: int = 10) -> List[Dict[str, Any]]:
+    def get_recent_history(self, conversation_id: Optional[str], limit: int = _MAX_HISTORY_MESSAGES) -> List[Dict[str, Any]]:
         """
         Fetch recent conversation history for a given conversation.
         Delegates to operational_data_service.
         """
-        return operational_data_service.get_recent_history(conversation_id, limit=limit)
+        safe_limit = min(limit, _MAX_HISTORY_MESSAGES)
+        history = operational_data_service.get_recent_history(conversation_id, limit=safe_limit)
+        limited = self._limit_recent_messages(history, _MAX_HISTORY_MESSAGES)
+        logger.info(
+            "[RuntimeContext] Recent history window applied | requested_limit=%s fetched=%s limited=%s max_messages=%s",
+            limit,
+            len(history),
+            len(limited),
+            _MAX_HISTORY_MESSAGES,
+        )
+        return limited
 
     def _truncate_payload(self, data: Any, max_len: int = 400) -> Any:
         """

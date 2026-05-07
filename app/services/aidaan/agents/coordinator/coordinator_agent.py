@@ -140,6 +140,13 @@ class CoordinatorAgent(BaseAgent):
             "compare ",
             "analyze ",
             "analyse ",
+            "about ",
+            "tell me about",
+            "ke bare me",
+            "ke baare me",
+            "batao",
+            "batado",
+            "batato",
             "latest ",
             "current ",
             "price ",
@@ -169,6 +176,9 @@ class CoordinatorAgent(BaseAgent):
             "macd",
             "support",
             "resistance",
+            "about",
+            "batao",
+            "baare",
         }
 
         if any(phrase in lowered_text for phrase in explicit_phrases):
@@ -188,6 +198,36 @@ class CoordinatorAgent(BaseAgent):
             return True
 
         return False
+
+    @staticmethod
+    def _is_follow_up_bridge_message(lowered_text: str) -> bool:
+        """
+        Detect short continuity bridges that genuinely refer to the prior thread.
+
+        This prevents arbitrary short messages (e.g., random names) from being
+        auto-routed to an existing pending follow-up owner.
+        """
+        normalized = re.sub(r"\s+", " ", lowered_text.strip().lower())
+        if not normalized:
+            return False
+
+        bridge_exact = {
+            "yes", "yeah", "yep", "sure", "ok", "okay", "continue", "go ahead",
+            "do it", "proceed", "carry on", "same", "same one",
+            "that one", "this one", "more", "details", "tell me more",
+        }
+        if normalized in bridge_exact:
+            return True
+
+        bridge_patterns = [
+            r"^(continue|proceed)\b",
+            r"^(go ahead|do it)\b",
+            r"^(yes|yeah|yep|sure|ok|okay)\b",
+            r"^(more|details|elaborate)\b",
+            r"^(that|this)\s+(one|thread|flow|analysis)\b",
+            r"^(same|same one|same thread)\b",
+        ]
+        return any(re.search(pattern, normalized) for pattern in bridge_patterns)
 
     def _normalize_history_route(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1158,56 +1198,13 @@ class CoordinatorAgent(BaseAgent):
         pending_follow_up_owner = routing_memory["pending_follow_up_owner"]
         continuity_target = pending_follow_up_owner or last_specialist_agent
 
-        heuristic_decision = self._heuristic_route_decision(
-            text,
-            last_specialist_agent=continuity_target,
-            has_pending_follow_up=has_pending_follow_up,
-        )
-        if heuristic_decision:
-            logger.info(
-                "[Coordinator] 🎯 HEURISTIC ROUTE | agent=%s sub_intent=%s confidence=%.2f | reason=%s",
-                heuristic_decision.get("intent"),
-                heuristic_decision.get("sub_intent"),
-                float(heuristic_decision.get("confidence") or 0.0),
-                heuristic_decision.get("reason"),
-            )
-            return heuristic_decision
-
         logger.info(
-            "[Coordinator] No heuristic match | last_specialist=%s pending_owner=%s pending_follow_up=%s text_preview=%s",
+            "[Coordinator] Static heuristic routing disabled; using LLM-first routing | last_specialist=%s pending_owner=%s pending_follow_up=%s text_preview=%s",
             last_specialist_agent,
             pending_follow_up_owner,
             has_pending_follow_up,
             text[:120],
         )
-
-        if (
-            continuity_target
-            and has_pending_follow_up
-            and len(lowered.split()) <= 6
-            and not self._is_explicit_fresh_query(lowered)
-        ):
-            decision = self._default_routing_decision(
-                continuity_target,
-                "Short reply routed to previous specialist due to pending follow-up continuity.",
-                sub_intent="control",
-                control_signal="continue",
-                is_follow_up=True,
-                confidence=0.82,
-            )
-            logger.info(
-                "[Coordinator] Continuity route | agent=%s sub_intent=%s control=%s confidence=%.2f",
-                decision.get("intent"),
-                decision.get("sub_intent"),
-                decision.get("control_signal"),
-                float(decision.get("confidence") or 0.0),
-            )
-            return decision
-        if continuity_target and has_pending_follow_up and len(lowered.split()) <= 6:
-            logger.info(
-                "[Coordinator] Continuity guard prevented auto-continue | text_preview=%s",
-                text[:120],
-            )
 
         # --- Secondary Path: Fast LLM intent routing ---
         # Use the dedicated router model first, then escalate ambiguous continuity checks.
@@ -1262,10 +1259,15 @@ class CoordinatorAgent(BaseAgent):
             if parsed.get("intent") == "operational":
                 return parsed
 
-            if is_follow_up and continuity_target:
+            if (
+                is_follow_up
+                and continuity_target
+                and parsed.get("intent") in {"greeting", "context"}
+                and not self._is_explicit_fresh_query(lowered)
+            ):
                 parsed["intent"] = continuity_target
                 logger.info(
-                    "[Coordinator] Follow-up routed to previous specialist | agent=%s sub_intent=%s control=%s",
+                    "[Coordinator] Limited continuity override applied for ambiguous follow-up | agent=%s sub_intent=%s control=%s",
                     parsed.get("intent"),
                     parsed.get("sub_intent"),
                     parsed.get("control_signal"),

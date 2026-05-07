@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 class OperationalAgent(BaseAgent):
+    _MAX_HISTORY_QUESTIONS = 3
+
     def __init__(self) -> None:
         super().__init__(name="operational", model_name=settings.VERTEX_AI_MODEL_NAME)
 
@@ -60,7 +62,7 @@ class OperationalAgent(BaseAgent):
             ]
         )
 
-    def _extract_history_facts(self, conversation_id: str, max_substantive: int = 2) -> Dict[str, Any]:
+    def _extract_history_facts(self, conversation_id: str, max_substantive: int = _MAX_HISTORY_QUESTIONS) -> Dict[str, Any]:
         """
         Build a compact deterministic history summary from persisted memory.
         
@@ -106,7 +108,7 @@ class OperationalAgent(BaseAgent):
         )
         return facts
 
-    def _build_history_response(self, *, conversation_id: str, requested_count: int = 2) -> AidaanMessageResponse:
+    def _build_history_response(self, *, conversation_id: str, requested_count: int = _MAX_HISTORY_QUESTIONS) -> AidaanMessageResponse:
         """
         Return a strict no-tool conversation-memory summary.
         
@@ -118,7 +120,8 @@ class OperationalAgent(BaseAgent):
         
         # Optimization: Use get_recent_history instead of get_conversation_bundle
         # This avoids fetching RFQ drafts, tool invocations, and audit events
-        facts = self._extract_history_facts(conversation_id, max_substantive=requested_count)
+        bounded_count = max(1, min(requested_count, self._MAX_HISTORY_QUESTIONS))
+        facts = self._extract_history_facts(conversation_id, max_substantive=bounded_count)
 
         if facts["history_count"] == 0:
             reply = (
@@ -367,14 +370,14 @@ class OperationalAgent(BaseAgent):
 
         if sub_intent == "history_lookup":
             # Extract requested count from text if present
-            requested_count = 2  # default
+            requested_count = self._MAX_HISTORY_QUESTIONS  # default
             import re
             count_match = re.search(r'\b(\d+)\b', text.lower())
             if count_match:
                 try:
                     requested_count = int(count_match.group(1))
-                    # Cap at reasonable limit
-                    requested_count = min(requested_count, 10)
+                    # Hard cap to protect token usage
+                    requested_count = min(requested_count, self._MAX_HISTORY_QUESTIONS)
                     logger.info("[OperationalAgent] Detected requested conversation count: %s", requested_count)
                 except ValueError:
                     pass

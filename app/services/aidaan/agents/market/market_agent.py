@@ -187,6 +187,15 @@ class MarketAgent(BaseAgent):
             + "    - Even if the query also asks for other data (price, volume, etc.), you MUST still call get_market_news\n"
             + "    - Example: 'Compare sentiment of MSFT to its volume' → Call BOTH get_market_news AND get_daily_series\n"
             + " 9. RISK AGENT: If the user says 'consult risk agent', 'check desk limit', or 'does this breach' — you MUST call `consult_specialist_agent` with target_agent='risk'. Do NOT skip this step.\n"
+            + " 10. **TOP STOCKS / RANKINGS (NEW - CRITICAL)**: If the user asks for 'top stocks', 'largest companies', 'biggest stocks', 'top 10 stocks', etc.:\n"
+            + "    - DEFAULT INTERPRETATION: 'Top stocks' = largest by market capitalization (industry standard)\n"
+            + "    - IMMEDIATELY call `get_top_stocks_by_market_cap(limit=N)` where N is the requested number (default 10)\n"
+            + "    - Do NOT ask for clarification unless user explicitly requests a different metric\n"
+            + "    - Format response as Markdown table with: Rank, Company, Ticker, Market Cap, Price, Sector\n"
+            + "    - For 'top gainers' → call `get_top_gainers(limit=N)`\n"
+            + "    - For 'top losers' → call `get_top_losers(limit=N)`\n"
+            + "    - For 'most active' → call `get_top_stocks_by_volume(limit=N)`\n"
+            + "    - This is NOT hallucination: we use known mega-cap list + live API data\n"
         )
 
         if sub_intent == "education":

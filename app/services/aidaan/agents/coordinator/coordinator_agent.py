@@ -399,6 +399,56 @@ class CoordinatorAgent(BaseAgent):
                 confidence=0.95,
             ), "fx_rate_keyword")
 
+        # NEW: TOP STOCKS / RANKINGS DETECTION (CRITICAL - High Priority)
+        # Patterns for "top stocks", "largest companies", "biggest stocks", etc.
+        top_stocks_patterns = [
+            r"\btop\s+\d*\s*(stocks?|companies|equities|shares)\b",
+            r"\b(largest|biggest|top)\s+(us|american|usa)?\s*(stocks?|companies)\b",
+            r"\b(best|top)\s+performing\s+stocks?\b",
+            r"\bmarket\s+leaders?\b",
+            r"\bmega.?cap\s+stocks?\b",
+            r"\bblue.?chip\s+stocks?\b",
+            r"\bs&p\s*500\s+top\b",
+            r"\bnasdaq\s+top\b",
+            r"\bmost\s+valuable\s+companies\b",
+        ]
+        
+        # Also check for specific ranking queries
+        ranking_keywords = {
+            "top stocks", "largest stocks", "biggest stocks", "top companies",
+            "largest companies", "biggest companies", "market leaders",
+            "top 10", "top 5", "top 20", "top ten", "top five",
+        }
+        
+        has_top_stocks_pattern = any(re.search(p, lowered, re.IGNORECASE) for p in top_stocks_patterns)
+        has_ranking_keyword = any(keyword in lowered for keyword in ranking_keywords)
+        
+        if has_top_stocks_pattern or has_ranking_keyword:
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Top stocks/rankings query matched heuristic (market cap rankings).",
+                sub_intent="market_analysis",
+                confidence=0.98,
+            ), "top_stocks_ranking")
+
+        # NEW: TOP GAINERS/LOSERS DETECTION
+        gainers_losers_patterns = [
+            r"\btop\s+gainers?\b",
+            r"\btop\s+losers?\b",
+            r"\bmost\s+active\b",
+            r"\bbiggest\s+movers?\b",
+            r"\blargest\s+gains?\b",
+            r"\blargest\s+losses?\b",
+        ]
+        
+        if any(re.search(p, lowered, re.IGNORECASE) for p in gainers_losers_patterns):
+            return _log_heuristic(self._default_routing_decision(
+                "market",
+                "Top gainers/losers query matched heuristic.",
+                sub_intent="market_analysis",
+                confidence=0.97,
+            ), "top_gainers_losers")
+
         continue_set = {
             "yes", "y", "haan", "ha", "han", "yep", "yeah", "ok", "okay", "sure",
             "continue", "proceed", "do it", "go ahead"

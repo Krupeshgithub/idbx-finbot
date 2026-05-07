@@ -4,6 +4,20 @@
 
 ---
 
+## ✨ New Feature: Top Stocks Rankings
+
+AIDAAN now supports instant market rankings queries! Ask for:
+- **"top 10 stocks in us market"** → Get largest companies by market cap
+- **"top gainers today"** → See biggest price increases
+- **"top losers"** → See biggest price decreases  
+- **"most active stocks"** → See highest volume stocks
+
+📚 **Quick Start:** See [`docs/QUICK_START_TOP_STOCKS.md`](docs/QUICK_START_TOP_STOCKS.md)  
+📖 **Full Docs:** See [`docs/TOP_STOCKS_FEATURE.md`](docs/TOP_STOCKS_FEATURE.md)  
+💡 **Examples:** See [`docs/EXAMPLE_RESPONSES.md`](docs/EXAMPLE_RESPONSES.md)
+
+---
+
 ## Architecture: Why REST + WebSocket?
 
 In a high-stakes trading environment, transparency and reliability are paramount. We use a **Dual-Channel Architecture**:

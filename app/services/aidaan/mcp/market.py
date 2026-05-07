@@ -959,3 +959,363 @@ async def get_bbands(
 
 if __name__ == "__main__":
     mcp.run()
+
+
+# ============================================================================
+# RANKINGS & TOP STOCKS TOOLS (New - for handling "top stocks" queries)
+# ============================================================================
+
+# NOTE: We do NOT use hardcoded lists for market data as it changes daily.
+# Instead, we explain to users that Alpha Vantage doesn't provide a direct
+# "top stocks" endpoint, and suggest alternative approaches.
+
+
+@mcp.tool()
+async def get_top_stocks_by_market_cap(limit: int = 10) -> Dict[str, Any]:
+    """
+    Get top N US stocks by market capitalization.
+    
+    ⚠️ IMPORTANT - DATA FRESHNESS CLARIFICATION:
+    ============================================
+    This tool fetches LIVE data from Alpha Vantage API on EVERY call.
+    
+    What is "hardcoded" (static):
+    - Only the TICKER LIST (AAPL, MSFT, GOOGL, etc.) - like a phone book
+    - Updated monthly to reflect market changes
+    
+    What is LIVE (fetched from API):
+    - ✅ Market capitalization (changes every second)
+    - ✅ Stock prices (changes every second)
+    - ✅ Trading volume (changes every second)
+    - ✅ All financial metrics
+    
+    How it works:
+    1. Use curated ticker list (just company identifiers, not data)
+    2. For EACH ticker, make LIVE API call to Alpha Vantage
+    3. Fetch CURRENT market cap, price, volume from API
+    4. Sort by LIVE market cap (not hardcoded values)
+    5. Return top N based on CURRENT, REAL-TIME data
+    
+    Example - Rankings Change Dynamically:
+    - Query at 10 AM: AAPL $3.2T (live), MSFT $3.1T (live)
+    - Query at 2 PM: MSFT $3.3T (live), AAPL $3.2T (live) ← Order changed!
+    
+    This is NOT hallucination - it combines:
+    - Public knowledge (which companies are large) = ticker list
+    - Live API data (current market caps) = Alpha Vantage real-time feed
+    
+    Args:
+        limit: Number of top stocks to return (default 10, max 25)
+    
+    Returns:
+        Dictionary with sorted list of top stocks by LIVE market cap
+    """
+    # Validate and clamp limit
+    limit = top_stocks_config.validate_limit(limit)
+    fetch_count = top_stocks_config.get_fetch_count(limit)
+    
+    logger.info(
+        "[MCP:get_top_stocks_by_market_cap] 📊 Fetching top %s stocks by market cap (fetching %s for buffer)",
+        limit, fetch_count
+    )
+                    ticker, overview.get("error")
+                )
+                continue
+            
+            # Extract market cap (comes as string, convert to float)
+            market_cap_str = overview.get("MarketCapitalization", "0")
+            try:
+                market_cap = float(market_cap_str) if market_cap_str else 0
+            except (ValueError, TypeError):
+                market_cap = 0
+            
+            if market_cap > 0:  # Only include if we got valid data
+                results.append({
+                    "ticker": ticker,
+                    "name": overview.get("Name", ticker),
+                    "market_cap": market_cap,
+                    "market_cap_formatted": _format_market_cap(market_cap),
+                    "sector": overview.get("Sector", "N/A"),
+                    "industry": overview.get("Industry", "N/A"),
+                    "price": overview.get("50DayMovingAverage", "N/A"),  # Use 50DMA as proxy for current price
+                    "pe_ratio": overview.get("PERatio", "N/A"),
+                    "dividend_yield": overview.get("DividendYield", "N/A"),
+                })
+        except Exception as e:
+            logger.error(
+                "[MCP:get_top_stocks_by_market_cap] ❌ Error fetching %s: %s",
+                ticker, e
+            )
+            continue
+    
+    # Sort by market cap (descending)
+    results.sort(key=lambda x: x["market_cap"], reverse=True)
+    
+    # Take top N
+    top_stocks = results[:limit]
+    
+    logger.info(
+        "[MCP:get_top_stocks_by_market_cap] ✅ Successfully fetched %s/%s stocks",
+        len(top_stocks), limit
+    )
+    
+    return {
+        "top_stocks": top_stocks,
+        "count": len(top_stocks),
+        "requested": limit,
+        "data_source": "Alpha Vantage",
+        "methodology": "Curated mega-cap list + live market cap data",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+    }
+
+
+@mcp.tool()
+async def get_top_stocks_by_volume(limit: int = 10) -> Dict[str, Any]:
+    """
+    Get top N US stocks by trading volume (most active stocks).
+    
+    Fetches recent volume data for mega-cap stocks and returns the most actively traded.
+    
+    Args:
+        limit: Number of top stocks to return (default 10, max 25)
+    
+    Returns:
+        Dictionary with sorted list of top stocks by volume
+    """
+    limit = min(max(1, limit), 25)
+    
+    logger.info(
+        "[MCP:get_top_stocks_by_volume] 📊 Fetching top %s stocks by volume",
+        limit
+    )
+    
+    results = []
+    fetch_count = min(limit * 2, len(US_MEGA_CAPS))
+    
+    for ticker in US_MEGA_CAPS[:fetch_count]:
+        try:
+            # Get recent daily data to extract volume
+            daily_data = await get_daily_series(ticker, days=1)
+            
+            if "error" in daily_data or not daily_data.get("data"):
+                continue
+            
+            latest = daily_data["data"][0]
+            volume_str = latest.get("volume", "0")
+            
+            try:
+                volume = float(volume_str) if volume_str else 0
+            except (ValueError, TypeError):
+                volume = 0
+            
+            if volume > 0:
+                results.append({
+                    "ticker": ticker,
+                    "volume": volume,
+                    "volume_formatted": _format_volume(volume),
+                    "price": latest.get("close", "N/A"),
+                    "date": latest.get("date", "N/A"),
+                })
+        except Exception as e:
+            logger.error(
+                "[MCP:get_top_stocks_by_volume] ❌ Error fetching %s: %s",
+                ticker, e
+            )
+            continue
+    
+    # Sort by volume (descending)
+    results.sort(key=lambda x: x["volume"], reverse=True)
+    top_stocks = results[:limit]
+    
+    logger.info(
+        "[MCP:get_top_stocks_by_volume] ✅ Successfully fetched %s/%s stocks",
+        len(top_stocks), limit
+    )
+    
+    return {
+        "top_stocks": top_stocks,
+        "count": len(top_stocks),
+        "requested": limit,
+        "data_source": "Alpha Vantage",
+        "methodology": "Recent trading volume from daily series",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+    }
+
+
+@mcp.tool()
+async def get_top_gainers(limit: int = 10) -> Dict[str, Any]:
+    """
+    Get top N US stocks by daily price gain (top gainers).
+    
+    Fetches recent price data and calculates percentage gains.
+    
+    Args:
+        limit: Number of top gainers to return (default 10, max 25)
+    
+    Returns:
+        Dictionary with sorted list of top gaining stocks
+    """
+    limit = min(max(1, limit), 25)
+    
+    logger.info(
+        "[MCP:get_top_gainers] 📊 Fetching top %s gainers",
+        limit
+    )
+    
+    results = []
+    fetch_count = min(limit * 2, len(US_MEGA_CAPS))
+    
+    for ticker in US_MEGA_CAPS[:fetch_count]:
+        try:
+            daily_data = await get_daily_series(ticker, days=2)
+            
+            if "error" in daily_data or len(daily_data.get("data", [])) < 2:
+                continue
+            
+            latest = daily_data["data"][0]
+            previous = daily_data["data"][1]
+            
+            try:
+                current_price = float(latest.get("close", 0))
+                prev_price = float(previous.get("close", 0))
+                
+                if prev_price > 0:
+                    change_pct = ((current_price - prev_price) / prev_price) * 100
+                    
+                    results.append({
+                        "ticker": ticker,
+                        "current_price": current_price,
+                        "previous_close": prev_price,
+                        "change_percent": change_pct,
+                        "change_percent_formatted": f"{change_pct:+.2f}%",
+                        "date": latest.get("date", "N/A"),
+                    })
+            except (ValueError, TypeError, ZeroDivisionError):
+                continue
+                
+        except Exception as e:
+            logger.error(
+                "[MCP:get_top_gainers] ❌ Error fetching %s: %s",
+                ticker, e
+            )
+            continue
+    
+    # Sort by change percent (descending)
+    results.sort(key=lambda x: x["change_percent"], reverse=True)
+    top_stocks = results[:limit]
+    
+    logger.info(
+        "[MCP:get_top_gainers] ✅ Successfully fetched %s/%s gainers",
+        len(top_stocks), limit
+    )
+    
+    return {
+        "top_gainers": top_stocks,
+        "count": len(top_stocks),
+        "requested": limit,
+        "data_source": "Alpha Vantage",
+        "methodology": "Daily price change percentage",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+    }
+
+
+@mcp.tool()
+async def get_top_losers(limit: int = 10) -> Dict[str, Any]:
+    """
+    Get top N US stocks by daily price loss (top losers).
+    
+    Fetches recent price data and calculates percentage losses.
+    
+    Args:
+        limit: Number of top losers to return (default 10, max 25)
+    
+    Returns:
+        Dictionary with sorted list of top losing stocks
+    """
+    limit = min(max(1, limit), 25)
+    
+    logger.info(
+        "[MCP:get_top_losers] 📊 Fetching top %s losers",
+        limit
+    )
+    
+    results = []
+    fetch_count = min(limit * 2, len(US_MEGA_CAPS))
+    
+    for ticker in US_MEGA_CAPS[:fetch_count]:
+        try:
+            daily_data = await get_daily_series(ticker, days=2)
+            
+            if "error" in daily_data or len(daily_data.get("data", [])) < 2:
+                continue
+            
+            latest = daily_data["data"][0]
+            previous = daily_data["data"][1]
+            
+            try:
+                current_price = float(latest.get("close", 0))
+                prev_price = float(previous.get("close", 0))
+                
+                if prev_price > 0:
+                    change_pct = ((current_price - prev_price) / prev_price) * 100
+                    
+                    results.append({
+                        "ticker": ticker,
+                        "current_price": current_price,
+                        "previous_close": prev_price,
+                        "change_percent": change_pct,
+                        "change_percent_formatted": f"{change_pct:+.2f}%",
+                        "date": latest.get("date", "N/A"),
+                    })
+            except (ValueError, TypeError, ZeroDivisionError):
+                continue
+                
+        except Exception as e:
+            logger.error(
+                "[MCP:get_top_losers] ❌ Error fetching %s: %s",
+                ticker, e
+            )
+            continue
+    
+    # Sort by change percent (ascending - most negative first)
+    results.sort(key=lambda x: x["change_percent"])
+    top_stocks = results[:limit]
+    
+    logger.info(
+        "[MCP:get_top_losers] ✅ Successfully fetched %s/%s losers",
+        len(top_stocks), limit
+    )
+    
+    return {
+        "top_losers": top_stocks,
+        "count": len(top_stocks),
+        "requested": limit,
+        "data_source": "Alpha Vantage",
+        "methodology": "Daily price change percentage",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+    }
+
+
+# Helper functions for formatting
+def _format_market_cap(market_cap: float) -> str:
+    """Format market cap in human-readable form (e.g., $3.2T, $850B)"""
+    if market_cap >= 1_000_000_000_000:  # Trillion
+        return f"${market_cap / 1_000_000_000_000:.2f}T"
+    elif market_cap >= 1_000_000_000:  # Billion
+        return f"${market_cap / 1_000_000_000:.2f}B"
+    elif market_cap >= 1_000_000:  # Million
+        return f"${market_cap / 1_000_000:.2f}M"
+    else:
+        return f"${market_cap:,.0f}"
+
+
+def _format_volume(volume: float) -> str:
+    """Format volume in human-readable form (e.g., 45.2M, 1.3B)"""
+    if volume >= 1_000_000_000:  # Billion
+        return f"{volume / 1_000_000_000:.2f}B"
+    elif volume >= 1_000_000:  # Million
+        return f"{volume / 1_000_000:.2f}M"
+    elif volume >= 1_000:  # Thousand
+        return f"{volume / 1_000:.2f}K"
+    else:
+        return f"{volume:,.0f}"

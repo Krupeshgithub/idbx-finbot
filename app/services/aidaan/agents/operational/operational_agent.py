@@ -266,6 +266,89 @@ class OperationalAgent(BaseAgent):
                 model_info=self.get_model_info(),
             )
 
+    async def _build_corporate_knowledge_response(
+        self,
+        *,
+        text: str,
+        conversation_id: str,
+    ) -> AidaanMessageResponse:
+        """
+        Answer IDBX/AIDANN corporate knowledge queries using semantic search.
+        
+        This handles questions about:
+        - Company information and mission
+        - Leadership (e.g., "Who is the Chairman?")
+        - AIDANN capabilities and technology
+        - Security boundaries and execution policies
+        - Data privacy and DLP features
+        """
+        logger.info(
+            "[OperationalAgent] Corporate knowledge fast path engaged | conversation_id=%s query=%s",
+            conversation_id,
+            text[:100],
+        )
+        
+        try:
+            from app.db.session import get_db_session
+            from app.db.operational.aidaan_store import AidaanStoreRepository
+            from app.services.aidaan.response_formatter import (
+                format_corporate_knowledge_response,
+                DataSource
+            )
+            
+            store = AidaanStoreRepository()
+            
+            with get_db_session() as session:
+                # Search corporate knowledge base
+                results = store.search_corporate_knowledge(
+                    session=session,
+                    query=text,
+                    limit=2,
+                    similarity_threshold=0.6
+                )
+                
+                if not results:
+                    logger.info("[OperationalAgent] No corporate knowledge results found | query=%s", text[:100])
+                    return self.build_message_response(
+                        reply=f"**Data Source:** {DataSource.IDBX_CORPORATE_KB}\n---\n\nI don't have specific information about '{text}' in my corporate knowledge base. Please contact your IDBX administrator for more details.",
+                        bullets=["No matching corporate knowledge found", "Try rephrasing your question"],
+                        conversation_id=conversation_id,
+                        model_info=self.get_model_info(model_override="corporate-knowledge-empty"),
+                    )
+                
+                # Format response with data provenance
+                formatted_response = format_corporate_knowledge_response(results, text)
+                
+                # Build bullets from results
+                bullets = []
+                for idx, result in enumerate(results[:2], 1):
+                    category = result['category'].replace('_', ' ').title()
+                    similarity = result.get('similarity', 0)
+                    bullets.append(f"Match #{idx}: {category} (Confidence: {similarity:.1%})")
+                
+                logger.info(
+                    "[OperationalAgent] Corporate knowledge response built | results=%s top_similarity=%.2f",
+                    len(results),
+                    results[0].get('similarity', 0) if results else 0
+                )
+                
+                return self.build_message_response(
+                    reply=formatted_response,
+                    bullets=bullets,
+                    conversation_id=conversation_id,
+                    model_info=self.get_model_info(model_override="corporate-knowledge-semantic"),
+                )
+                
+        except Exception as exc:
+            logger.error("[OperationalAgent] Corporate knowledge search failed: %s", exc, exc_info=True)
+            return self.build_error_response(
+                reply="I encountered an error searching the corporate knowledge base. Please try again or contact support.",
+                conversation_id=conversation_id,
+                error=exc,
+                bullets=["Corporate knowledge search failed", "Database or embedding service may be unavailable"],
+                model_info=self.get_model_info(),
+            )
+
     async def handle_message(
         self,
         text: str,
@@ -299,6 +382,13 @@ class OperationalAgent(BaseAgent):
                 except ValueError:
                     pass
             return self._build_history_response(conversation_id=conversation_id, requested_count=requested_count)
+        
+        if sub_intent == "corporate_knowledge":
+            # Handle IDBX/AIDANN corporate knowledge queries
+            return await self._build_corporate_knowledge_response(
+                text=text,
+                conversation_id=conversation_id
+            )
         if sub_intent == "profile_recall":
             # Use hybrid memory (recent + Vertex semantic) to extract preferences deterministically.
             history = runtime_context_service.get_hybrid_history(conversation_id, query_text=text)

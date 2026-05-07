@@ -416,6 +416,27 @@ class CoordinatorAgent(BaseAgent):
                 confidence=0.99,
             ), "greeting")
 
+        # Corporate Knowledge Detection (IDBX/AIDANN internal queries)
+        # Route questions about company, leadership, capabilities to operational agent
+        corporate_keywords = [
+            "chairman", "ceo", "leadership", "nicholas", "runcorn",
+            "who made", "who created", "who built", "who developed",
+            "what is idbx", "what is aidann", "tell me about idbx", "tell me about aidann",
+            "company mission", "mission statement", "company info",
+            "data privacy", "dlp", "data loss prevention",
+            "can aidann execute", "can aidann trade", "aidann boundaries",
+            "security boundaries", "execution boundaries",
+            "aidann capabilities", "what can aidann do", "aidann features"
+        ]
+        
+        if any(keyword in lowered for keyword in corporate_keywords):
+            return _log_heuristic(self._default_routing_decision(
+                "operational",
+                "Corporate knowledge query matched heuristic (IDBX/AIDANN internal information).",
+                sub_intent="corporate_knowledge",
+                confidence=0.97,
+            ), "corporate_knowledge")
+
         # ------------------------------------------------------------------
         # Profile & preference recall heuristics (MUST run before "what is"
         # educational heuristics; otherwise we mis-route to Market).

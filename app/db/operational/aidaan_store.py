@@ -25,6 +25,25 @@ class AidaanStoreRepository:
     def _new_id(self) -> str:
         return str(uuid4())
 
+    @staticmethod
+    def _embedding_function_available(session: Session) -> bool:
+        from sqlalchemy import text
+
+        try:
+            exists_stmt = text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.routines
+                    WHERE routine_schema = 'aidaan'
+                      AND routine_name = 'get_embedding'
+                ) AS available
+                """
+            )
+            return bool(session.execute(exists_stmt).scalar())
+        except Exception:
+            return False
+
     def get_recent_messages(self, session: Session, conversation_id: str, limit: int = None) -> List[Dict[str, Any]]:
         """
         Get recent messages for a conversation.
@@ -498,3 +517,208 @@ class AidaanStoreRepository:
             logger.info(f"[TickerResolver] '{alias}' -> {result} (from database)")
         
         return result
+
+    def search_corporate_knowledge(
+        self,
+        session: Session,
+        query: str,
+        limit: int = 3,
+        similarity_threshold: float = 0.6,
+        category: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search IDBX corporate knowledge base using semantic similarity (PostgreSQL)
+        or full-text search (SQLite).
+        
+        This enables AIDANN to answer questions about:
+        - IDBX company information and mission
+        - Leadership (e.g., "Who is the Chairman?")
+        - AIDANN capabilities and technology
+        - Security boundaries and execution policies
+        - Data privacy and DLP features
+        
+        Args:
+            session: Database session
+            query: User's question or search query
+            limit: Maximum number of results to return (default: 3)
+            similarity_threshold: Minimum similarity score 0-1 (default: 0.6)
+            category: Optional category filter (e.g., 'leadership', 'security_boundaries')
+        
+        Returns:
+            List of knowledge entries with similarity scores, sorted by relevance
+            
+        Example:
+            results = store.search_corporate_knowledge(
+                session, 
+                "Who is the Chairman?",
+                limit=1
+            )
+            # Returns: [{"content": "The Chairman of IDBX is Nicholas J Runcorn...", "similarity": 0.95}]
+        """
+        from sqlalchemy import text
+        from app.db.config import get_database_config
+        import time
+        
+        start_time = time.monotonic()
+        db_config = get_database_config()
+        
+        # Check if we're using SQLite or PostgreSQL
+        is_sqlite = db_config.url.startswith("sqlite:")
+        
+        try:
+            if is_sqlite:
+                # SQLite fallback: Use full-text search instead of vector similarity
+                logger.info("[Corporate Knowledge] Using SQLite full-text search (no vector embeddings)")
+                
+                category_filter = ""
+                if category:
+                    category_filter = "AND ck.category = :category"
+                
+                # Use FTS5 for full-text search; fallback to LIKE if FTS is unavailable.
+                try:
+                    stmt = text(f"""
+                        SELECT 
+                            ck.id, ck.category, ck.question, ck.content, ck.metadata_json,
+                            fts.rank as similarity
+                        FROM corporate_knowledge_fts fts
+                        JOIN corporate_knowledge ck ON ck.id = fts.id
+                        WHERE corporate_knowledge_fts MATCH :query
+                        {category_filter}
+                        ORDER BY fts.rank
+                        LIMIT :limit
+                    """)
+
+                    params = {
+                        "query": query,
+                        "limit": limit
+                    }
+                    if category:
+                        params["category"] = category
+
+                    results = [dict(row) for row in session.execute(stmt, params).mappings().all()]
+                except Exception:
+                    fallback_stmt = text(f"""
+                        SELECT
+                            id, category, question, content, metadata_json,
+                            CASE
+                                WHEN LOWER(question) LIKE LOWER(:exact_question) THEN 0.95
+                                WHEN LOWER(content) LIKE LOWER(:contains_query) THEN 0.85
+                                ELSE 0.70
+                            END AS similarity
+                        FROM corporate_knowledge
+                        WHERE (
+                            LOWER(question) LIKE LOWER(:contains_query)
+                            OR LOWER(content) LIKE LOWER(:contains_query)
+                        )
+                        {category_filter}
+                        ORDER BY similarity DESC
+                        LIMIT :limit
+                    """)
+                    params = {
+                        "exact_question": query.strip(),
+                        "contains_query": f"%{query.strip()}%",
+                        "limit": limit,
+                    }
+                    if category:
+                        params["category"] = category
+                    results = [dict(row) for row in session.execute(fallback_stmt, params).mappings().all()]
+                
+                # Normalize rank to similarity score (0-1 range)
+                # FTS5 rank is negative, lower is better
+                if results:
+                    min_rank = min(r['similarity'] for r in results)
+                    max_rank = max(r['similarity'] for r in results)
+                    rank_range = max_rank - min_rank if max_rank != min_rank else 1
+                    
+                    for r in results:
+                        # Normalize to 0.7-0.95 range for consistency with vector search
+                        normalized = 0.95 - ((r['similarity'] - min_rank) / rank_range * 0.25)
+                        r['similarity'] = normalized
+                
+            else:
+                category_filter = ""
+                if category:
+                    category_filter = "AND category = :category"
+
+                if self._embedding_function_available(session):
+                    # PostgreSQL + pgvector ready: use vector similarity.
+                    logger.info("[Corporate Knowledge] Using PostgreSQL vector similarity search")
+                    stmt = text(f"""
+                        WITH query_embedding AS (
+                            SELECT aidaan.get_embedding(:query) as query_vec
+                        ),
+                        ranked_knowledge AS (
+                            SELECT 
+                                id, category, question, content, metadata_json,
+                                (1 - (embedding_vector <=> query_embedding.query_vec)) as similarity
+                            FROM {self.schema}.corporate_knowledge, query_embedding
+                            WHERE embedding_vector IS NOT NULL
+                            {category_filter}
+                            AND (1 - (embedding_vector <=> query_embedding.query_vec)) >= :threshold
+                            ORDER BY embedding_vector <=> query_embedding.query_vec
+                            LIMIT :limit
+                        )
+                        SELECT * FROM ranked_knowledge
+                        ORDER BY similarity DESC
+                    """)
+
+                    params = {
+                        "query": query,
+                        "threshold": similarity_threshold,
+                        "limit": limit
+                    }
+                    if category:
+                        params["category"] = category
+                    results = [dict(row) for row in session.execute(stmt, params).mappings().all()]
+                else:
+                    # Fallback for early deployments before get_embedding is installed.
+                    logger.info("[Corporate Knowledge] Embedding function unavailable, using lexical fallback")
+                    stmt = text(f"""
+                        SELECT
+                            id,
+                            category,
+                            question,
+                            content,
+                            metadata_json,
+                            CASE
+                                WHEN LOWER(question) LIKE LOWER(:exact_question) THEN 0.95
+                                WHEN LOWER(content) LIKE LOWER(:contains_query) THEN 0.85
+                                ELSE 0.70
+                            END AS similarity
+                        FROM {self.schema}.corporate_knowledge
+                        WHERE (
+                            LOWER(question) LIKE LOWER(:contains_query)
+                            OR LOWER(content) LIKE LOWER(:contains_query)
+                        )
+                        {category_filter}
+                        ORDER BY similarity DESC, updated_at DESC
+                        LIMIT :limit
+                    """)
+                    params = {
+                        "exact_question": query.strip(),
+                        "contains_query": f"%{query.strip()}%",
+                        "limit": limit,
+                    }
+                    if category:
+                        params["category"] = category
+                    results = [dict(row) for row in session.execute(stmt, params).mappings().all()]
+            
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            
+            logger.info(
+                f"[Corporate Knowledge] Search completed | "
+                f"backend={'sqlite' if is_sqlite else 'postgresql'} | "
+                f"query='{query[:50]}...' | results={len(results)} | "
+                f"latency_ms={elapsed_ms:.1f}"
+            )
+            
+            return results
+            
+        except Exception as e:
+            elapsed_ms = (time.monotonic() - start_time) * 1000
+            logger.error(
+                f"[Corporate Knowledge] Search failed | "
+                f"backend={'sqlite' if is_sqlite else 'postgresql'} | "
+                f"query='{query[:50]}...' | error={str(e)} | latency_ms={elapsed_ms:.1f}"
+            )
+            return []

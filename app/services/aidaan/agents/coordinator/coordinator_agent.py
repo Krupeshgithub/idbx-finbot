@@ -83,6 +83,22 @@ class CoordinatorAgent(BaseAgent):
         compact = re.sub(r"\s+", " ", compact).strip()
         return compact
 
+    @staticmethod
+    def _extract_fresh_query_segment(text: str) -> Optional[str]:
+        """
+        If a user explicitly indicates a thread stop + fresh query in the same turn,
+        extract only the fresh-query segment for routing and execution.
+        """
+        lowered = text.lower()
+        markers = ("fresh query:", "new query:", "ab fresh query:", "ab new query:")
+        for marker in markers:
+            idx = lowered.find(marker)
+            if idx != -1:
+                candidate = text[idx + len(marker):].strip()
+                if candidate:
+                    return candidate
+        return None
+
     def _is_greeting_phrase(self, compact_text: str) -> bool:
         """
         Detect standalone greeting variants without paying an LLM routing cost.
@@ -965,16 +981,24 @@ class CoordinatorAgent(BaseAgent):
         from app.services.aidaan.performance import clear_metrics, format_metrics_table
         clear_metrics()
 
+        effective_text = self._extract_fresh_query_segment(text) or text
+        if effective_text != text:
+            logger.info(
+                "[Coordinator] Fresh-query segment extracted from mixed control turn | original=%s effective=%s",
+                text[:120],
+                effective_text[:120],
+            )
+
         conv_id = conversation_id or f"conv-{uuid4().hex[:8]}"
-        logger.info(f"[Coordinator] Handling session {conv_id}: {text[:50]}...")
+        logger.info(f"[Coordinator] Handling session {conv_id}: {effective_text[:50]}...")
         start_time = time.monotonic()
         logger.info(f"[TIMING] Request received | conv_id={conv_id}")
 
         # Ultra-fast path: "remember/store ... reply only X"
-        lowered_text = text.strip().lower()
+        lowered_text = effective_text.strip().lower()
         reply_only_match = re.search(
             r"\breply only\s+([A-Za-z0-9_-]{1,32})\.?\s*$",
-            text.strip(),
+            effective_text.strip(),
             flags=re.IGNORECASE,
         )
         if reply_only_match and any(
@@ -1003,7 +1027,7 @@ class CoordinatorAgent(BaseAgent):
                 "[Coordinator] Out-of-domain query rejected early | conv_id=%s latency_ms=%.1f text=%s",
                 conv_id,
                 latency_ms,
-                text[:100],
+            effective_text[:100],
             )
             return self.build_message_response(
                 reply="Yeh prashn humare domain se bahar hai. Hum financial markets, jaise ki stocks, bonds, FX, aur commodities se related jaankari aur analysis provide karte hain. Humare paas mythological, personal, ya general knowledge ke questions ka answer dene ke liye tools ya data nahi hai.",
@@ -1018,7 +1042,7 @@ class CoordinatorAgent(BaseAgent):
         username = context.get("username")
         
         guardrail_result = guardrail_orchestrator.pre_process_request(
-            text,
+            effective_text,
             username=username,
             conversation_id=conv_id,
             context=context
@@ -1059,7 +1083,7 @@ class CoordinatorAgent(BaseAgent):
             )
 
         # 2. Routing phase (legacy kill switch check kept for backward compatibility)
-        if kill_switch_service.is_active() and kill_switch_service.request_has_trade_intent(text):
+        if kill_switch_service.is_active() and kill_switch_service.request_has_trade_intent(effective_text):
             status = kill_switch_service.get_status()
             logger.warning(
                 "[Coordinator] Kill switch blocked trade-intent request before routing | conversation_id=%s reason=%s",
@@ -1078,7 +1102,7 @@ class CoordinatorAgent(BaseAgent):
                 latency_ms=(time.monotonic() - start_time) * 1000,
             )
         routing = await self._route_intent(
-            text,
+            effective_text,
             conversation_id=conv_id,
             username=context.get("username"),
         )
@@ -1103,7 +1127,7 @@ class CoordinatorAgent(BaseAgent):
             logger.info(f"[TIMING] Delegating to {agent_id} agent | conv_id={conv_id}")
             
             response = await target_agent.handle_message(
-                text=text,
+                text=effective_text,
                 conversation_id=conv_id,
                 context=context,
                 tool_callback=tool_callback,
@@ -1129,7 +1153,7 @@ class CoordinatorAgent(BaseAgent):
                     original_reply,
                     context=context,
                     conversation_id=conv_id,
-                    original_query=text
+                    original_query=effective_text
                 )
                 
                 if reframed_reply != original_reply:
@@ -1153,7 +1177,7 @@ class CoordinatorAgent(BaseAgent):
             # Final Transaction Log for speed and accuracy tracking
             perf_logger.info("*************")
             perf_logger.info(f"TRANSACTION_LOG | conv_id={conv_id}")
-            perf_logger.info(f"QUESTION: {text}")
+            perf_logger.info(f"QUESTION: {effective_text}")
             perf_logger.info(f"ANSWER: {response.reply}")
             perf_logger.info(f"TOTAL_LATENCY: {response.latency_ms/1000:.3f}s")
             
@@ -1210,43 +1234,23 @@ class CoordinatorAgent(BaseAgent):
         # Use the dedicated router model first, then escalate ambiguous continuity checks.
         # Phase 4 Optimization: Skip Pro escalation for high-confidence results
         try:
+            # Accuracy-first mode: always use the stronger reasoning router model.
             parsed = await self._classify_route(
                 text=text,
                 conversation_id=conversation_id,
                 username=username,
-                model_name=settings.VERTEX_AI_ROUTER_MODEL_NAME,
+                model_name=settings.VERTEX_AI_REASONING_MODEL_NAME,
             )
 
-            # Phase 4: Check if we can skip Pro escalation
             confidence = float(parsed.get("confidence") or 0.0)
             is_follow_up = bool(parsed.get("is_follow_up"))
-            
-            # Skip Pro if high confidence and not a follow-up
-            if confidence > 0.85 and not is_follow_up:
-                logger.info(
-                    "[Coordinator] High-confidence Flash result, skipping Pro escalation | confidence=%.2f intent=%s",
-                    confidence,
-                    parsed.get("intent")
-                )
-                # Continue with Flash result
-            elif self._should_escalate_route_check(text, parsed):
-                # Only escalate for ambiguous cases
-                logger.info(
-                    "[Coordinator] Escalating to Pro model | confidence=%.2f is_follow_up=%s",
-                    confidence,
-                    is_follow_up
-                )
-                parsed = await self._classify_route(
-                    text=text,
-                    conversation_id=conversation_id,
-                    username=username,
-                    model_name=settings.VERTEX_AI_REASONING_MODEL_NAME,
-                )
-            else:
-                logger.info(
-                    "[Coordinator] Using Flash result without escalation | confidence=%.2f",
-                    confidence
-                )
+            logger.info(
+                "[Coordinator] Reasoning router result selected | confidence=%.2f is_follow_up=%s intent=%s sub_intent=%s",
+                confidence,
+                is_follow_up,
+                parsed.get("intent"),
+                parsed.get("sub_intent"),
+            )
 
             intent = parsed.get("intent") or "greeting"
             parsed["sub_intent"] = parsed.get("sub_intent") or "general"
@@ -1256,6 +1260,20 @@ class CoordinatorAgent(BaseAgent):
             is_standalone_greeting = bool(parsed.get("is_standalone_greeting"))
 
             parsed = self._normalize_history_route(parsed)
+            if (
+                parsed.get("intent") == "operational"
+                and parsed.get("sub_intent") == "history_lookup"
+                and not self._is_direct_history_query(lowered)
+                and not is_follow_up
+            ):
+                logger.info(
+                    "[Coordinator] History-route guard triggered for non-history query | text_preview=%s",
+                    text[:120],
+                )
+                parsed["intent"] = "market"
+                parsed["sub_intent"] = "market_analysis" if self._is_explicit_fresh_query(lowered) else "general"
+                parsed["is_history_query"] = False
+                parsed["reason"] = "History route corrected: query is not a direct history lookup."
             if parsed.get("intent") == "operational":
                 return parsed
 

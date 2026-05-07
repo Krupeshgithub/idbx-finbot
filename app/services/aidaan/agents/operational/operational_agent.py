@@ -62,6 +62,31 @@ class OperationalAgent(BaseAgent):
             ]
         )
 
+    @staticmethod
+    def _is_preference_query(text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+        cues = (
+            "saved preference",
+            "preference check",
+            "overnight risk",
+            "maine",
+            "i said",
+            "did i say",
+            "bola tha",
+            "avoid holding positions overnight",
+        )
+        return any(cue in normalized for cue in cues)
+
+    @staticmethod
+    def _is_low_context_message(text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text.strip())
+        if not normalized:
+            return False
+        tokens = re.findall(r"[A-Za-z0-9]+", normalized)
+        if len(tokens) > 3:
+            return False
+        return "?" not in normalized and not any(ch.isdigit() for ch in normalized)
+
     def _extract_history_facts(self, conversation_id: str, max_substantive: int = _MAX_HISTORY_QUESTIONS) -> Dict[str, Any]:
         """
         Build a compact deterministic history summary from persisted memory.
@@ -207,6 +232,18 @@ class OperationalAgent(BaseAgent):
             bullets=bullets,
             conversation_id=conversation_id,
             model_info=self.get_model_info(),
+        )
+
+    def _build_clarification_response(self, *, conversation_id: str) -> AidaanMessageResponse:
+        reply = (
+            "[Direct Answer]\nI need a little more context to route this correctly.\n\n"
+            "[Operational Detail]\nPlease share a fresh query (instrument/topic + what you want: price, compare, outlook, or history)."
+        )
+        return self.build_message_response(
+            reply=reply,
+            bullets=["Low-context input detected", "Awaiting explicit query"],
+            conversation_id=conversation_id,
+            model_info=self.get_model_info(model_override="low-context-clarify"),
         )
 
     async def _build_conversation_logic_response(
@@ -367,6 +404,13 @@ class OperationalAgent(BaseAgent):
             routing.get("confidence"),
             routing.get("reason"),
         )
+
+        if self._is_preference_query(text) and sub_intent != "preference_recall":
+            logger.info("[OperationalAgent] Preference-query guard remapped sub_intent to preference_recall")
+            sub_intent = "preference_recall"
+
+        if self._is_low_context_message(text) and sub_intent in {"history_lookup", "general"}:
+            return self._build_clarification_response(conversation_id=conversation_id)
 
         if sub_intent == "history_lookup":
             # Extract requested count from text if present

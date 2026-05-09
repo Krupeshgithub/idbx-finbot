@@ -378,9 +378,10 @@ async def _stream_vertex_response(
         from app.services.aidaan.agents.market.market_agent import market_agent as _market_agent
 
         agent_response = None
+        streaming_chunks = None
         agent_error: Optional[str] = None
         try:
-            agent_response = await _market_agent.handle_message(
+            result = await _market_agent.handle_message(
                 text=user_text,
                 conversation_id=conv_id,
                 context={
@@ -390,6 +391,13 @@ async def _stream_vertex_response(
                 tool_callback=emitter,
                 enable_streaming=True,  # Enable real token-by-token streaming
             )
+            # Unpack tuple: (response_metadata, streaming_generator)
+            if isinstance(result, tuple) and len(result) == 2:
+                agent_response, streaming_chunks = result
+            else:
+                # Fallback: non-streaming response
+                agent_response = result
+                streaming_chunks = None
         except Exception as agent_exc:
             logger.error("[WebSocket:Streaming] Market agent failed: %s", agent_exc)
             agent_error = str(agent_exc)
@@ -405,8 +413,8 @@ async def _stream_vertex_response(
             })
             return None
 
-        # Check if streaming_chunks generator is attached
-        if not hasattr(agent_response, 'streaming_chunks') or agent_response.streaming_chunks is None:
+        # Check if streaming_chunks generator is available
+        if streaming_chunks is None:
             # Fallback: agent returned a pre-built response (shouldn't happen with enable_streaming=True)
             reply_text = (agent_response.reply or "").strip()
             if not reply_text:
@@ -449,7 +457,7 @@ async def _stream_vertex_response(
             resp_model = (agent_response.model.llm if agent_response.model else "vertex") if agent_response else "vertex"
             first_token = True
             
-            async for chunk in agent_response.streaming_chunks:
+            async for chunk in streaming_chunks:
                 if chunk.chunk_type == "thinking_token":
                     sent = await safe_send_json({
                         "type": "thinking_token",

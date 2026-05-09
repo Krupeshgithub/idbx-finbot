@@ -261,10 +261,10 @@ class MarketAgent(BaseAgent):
         - synthesizing the final trader-facing answer
 
         Args:
-            enable_streaming: If True, returns a response with streaming_chunks
-                             generator instead of a pre-built reply. The caller
-                             must iterate over response.streaming_chunks to get
-                             real-time token-by-token output.
+            enable_streaming: If True, returns a tuple (response, streaming_chunks)
+                             where streaming_chunks is an async generator that yields
+                             real-time token-by-token output from Vertex AI.
+                             If False, returns AidaanMessageResponse with pre-built reply.
         """
         logger.info("[MarketAgent] Analyzing market query via Vertex-first orchestration: %s", text)
         market_start = time.monotonic()
@@ -375,14 +375,14 @@ class MarketAgent(BaseAgent):
         control_signal: str,
         context: Dict[str, Any],
         tool_callback: Optional[callable],
-    ) -> AidaanMessageResponse:
+    ):
         """
         Streaming-enabled market workflow:
         1. Phase 1 (Blocking): Call MCP tools and gather complete data
         2. Phase 2 (Streaming): Stream the synthesis token-by-token
 
-        Returns an AidaanMessageResponse with streaming_chunks generator attached.
-        The caller must iterate over response.streaming_chunks to get real-time output.
+        Returns a tuple: (AidaanMessageResponse, streaming_chunks_generator)
+        The caller must iterate over the generator to get real-time token-by-token output.
         """
         from app.core.llm_client import llm_client
         from app.services.aidaan.streaming_service import streaming_service
@@ -421,8 +421,7 @@ class MarketAgent(BaseAgent):
             f"Do NOT wrap the response in JSON or code blocks — return plain text only."
         )
 
-        # Create a response object with a streaming_chunks generator attached
-        # The caller will iterate over this to get real-time tokens
+        # Create a response object (metadata only, no reply text yet)
         response = self.build_message_response(
             reply="",  # Will be populated by streaming
             bullets=[],
@@ -430,8 +429,8 @@ class MarketAgent(BaseAgent):
             model_info=self.get_model_info(model_override=model_name),
         )
 
-        # Attach the streaming generator
-        response.streaming_chunks = streaming_service.stream_response_async(
+        # Create the streaming generator
+        streaming_chunks = streaming_service.stream_response_async(
             prompt=synthesis_prompt,
             model_name=model_name,
             system_instruction=self._build_market_system_instruction(sub_intent, control_signal),
@@ -440,7 +439,8 @@ class MarketAgent(BaseAgent):
             username=context.get("username"),
         )
 
-        return response
+        # Return tuple: (response_metadata, streaming_generator)
+        return (response, streaming_chunks)
 
     def get_capabilities(self) -> List[str]:
         """

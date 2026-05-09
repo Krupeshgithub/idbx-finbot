@@ -762,13 +762,55 @@ class LLMClient:
             raise ValueError("Empty or whitespace text provided for JSON extraction")
 
         clean = re.sub(r"```(?:json)?", "", raw_text).replace("```", "").strip()
+
+        # Fast path: try the whole cleaned string first (handles well-formed single objects)
+        try:
+            parsed = json.loads(clean)
+            if isinstance(parsed, dict):
+                return json.loads(json.dumps(parsed, ensure_ascii=False))
+        except json.JSONDecodeError:
+            pass
+
+        # Handle multiple concatenated JSON objects (e.g. model echoes tool results):
+        # Try to extract the first complete, balanced JSON object.
+        first_brace = clean.find('{')
+        if first_brace != -1:
+            depth = 0
+            in_string = False
+            escaped = False
+            end_pos = -1
+            for i, ch in enumerate(clean[first_brace:], start=first_brace):
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\':
+                    escaped = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end_pos = i
+                            break
+            if end_pos != -1:
+                payload = clean[first_brace:end_pos + 1]
+                try:
+                    parsed = json.loads(payload)
+                    validated = json.loads(json.dumps(parsed, ensure_ascii=False))
+                    return validated
+                except json.JSONDecodeError:
+                    pass
         
-        # Try greedy match first
+        # Fallback: greedy regex match (original behaviour)
         match = re.search(r"\{.*\}", clean, re.DOTALL)
         if match:
             payload = match.group(0)
         else:
-            # If no closing brace, find the first '{' and use the rest as payload
             start = clean.find('{')
             if start != -1:
                 payload = clean[start:]

@@ -9,21 +9,23 @@ STREAMING FLOW (Step by Step):
 3. If true -> _stream_vertex_response() is called
 4. Coordinator routing determines which agent handles the query
 5. Agent-specific streaming path:
-   a. Market (with tools) -> MCP tools execute first (blocking) -> Vertex streaming synthesis
+   a. Market (with tools) -> MCP tools execute with live tool_event signals -> Vertex streaming synthesis
    b. Greeting / Risk / General -> Direct Vertex streaming (no tools)
 6. Each token chunk is sent over WebSocket as it arrives
 7. Frontend renders tokens one by one
+
+TOOL_EVENT MESSAGE PROTOCOL:
+==============================
+During tool execution, the backend emits tool_event messages:
+  {"type": "tool_event", "event": "tool_start",    "tool": "get_stock_quote", "args": {"symbol": "AAPL"}, "tool_index": 1, "tool_total": 2}
+  {"type": "tool_event", "event": "tool_done",     "tool": "get_stock_quote", "elapsed_s": 1.23, "preview": "$293.32", "tool_index": 1, "tool_total": 2}
+  {"type": "tool_event", "event": "synthesis_start","tools_completed": 2}
+These drive the live process box in the frontend.
 
 NON-STREAMING PATH:
 ====================
 enable_streaming=false or absent -> existing coordinator_agent.handle_message() path
 No breaking changes to the existing flow.
-
-WHY WEBSOCKET NOT SSE (Server-Sent Events):
-============================================
-The existing architecture already uses WebSocket for bidirectional communication
-(tool_pulse callbacks, state machine signals). Streaming over the same connection
-avoids adding a second transport layer.
 """
 
 import asyncio
@@ -42,42 +44,179 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _make_tool_preview(result: Any) -> str:
+    """
+    Extract a short human-readable preview from a tool result dict.
+    Shown in the live process box as "what this tool returned".
+    """
+    if not isinstance(result, dict):
+        return str(result)[:80]
+
+    # Stock quote
+    if "price" in result and "symbol" in result:
+        price = result.get("price", "")
+        change = result.get("change_percent", "")
+        return f"{result['symbol']} ${price} {change}".strip()
+
+    # Daily series
+    if "data" in result and isinstance(result.get("data"), list):
+        rows = result["data"]
+        sym = result.get("symbol", "")
+        return f"{sym} — {len(rows)} rows returned"
+
+    # News
+    if "feed" in result:
+        count = len(result.get("feed", []))
+        status = result.get("analytics_status", "")
+        return f"{count} articles | FinBERT: {status}"
+
+    # Exchange rate
+    if "rate" in result:
+        return f"{result.get('from','?')}/{result.get('to','?')} = {result.get('rate','?')}"
+
+    # Error
+    if "error" in result:
+        return f"Error: {str(result['error'])[:60]}"
+
+    # Generic: first key=value
+    for k, v in result.items():
+        if isinstance(v, (str, int, float)) and v:
+            return f"{k}: {str(v)[:60]}"
+
+    return "Data received"
+
+
+class _RichToolCallback:
+    """
+    Stateful tool callback that tracks tool execution lifecycle and
+    emits structured tool_event messages over WebSocket.
+
+    Replaces the simple lambda tool_pulse with a full event emitter.
+    Tracks: tool name, args, start time, result preview, index/total.
+    """
+
+    def __init__(self, safe_send_json: Any):
+        self._send = safe_send_json
+        self._active: Dict[str, float] = {}   # tool_name -> start_time
+        self._completed: List[str] = []
+        self._total_expected = 0               # updated as tools are discovered
+
+    async def on_tool_start(self, tool_name: str, args: Dict[str, Any]) -> None:
+        """Called just before a tool executes."""
+        self._active[tool_name] = time.monotonic()
+        self._total_expected = max(self._total_expected, len(self._active) + len(self._completed))
+        idx = len(self._completed) + len(self._active)
+
+        # Friendly label for common tools
+        label_map = {
+            "get_stock_quote":       "Fetching live quote",
+            "get_daily_series":      "Fetching daily history",
+            "get_weekly_series":     "Fetching weekly history",
+            "get_intraday_series":   "Fetching intraday data",
+            "get_monthly_series":    "Fetching monthly history",
+            "get_market_news":       "Fetching news + FinBERT sentiment",
+            "get_company_overview":  "Fetching company fundamentals",
+            "get_earnings":          "Fetching earnings data",
+            "get_technical_indicator": "Computing technical indicator",
+            "get_sma":               "Computing SMA",
+            "get_ema":               "Computing EMA",
+            "get_rsi":               "Computing RSI",
+            "get_macd":              "Computing MACD",
+            "get_exchange_rate":     "Fetching FX rate",
+            "get_fx_daily_series":   "Fetching FX daily series",
+            "get_crypto_daily_series": "Fetching crypto data",
+            "get_economic_indicator": "Fetching economic indicator",
+            "get_commodity_price":   "Fetching commodity price",
+            "search_ticker":         "Searching ticker symbol",
+            "get_top_stocks_by_market_cap": "Fetching top stocks by market cap",
+            "get_top_gainers":       "Fetching top gainers",
+            "get_top_losers":        "Fetching top losers",
+        }
+        label = label_map.get(tool_name, f"Calling {tool_name}")
+
+        # Extract the primary argument for display (symbol, keywords, etc.)
+        primary_arg = (
+            args.get("symbol") or args.get("keywords") or
+            args.get("tickers") or args.get("from_currency") or
+            args.get("function") or ""
+        )
+
+        await self._send({
+            "type": "tool_event",
+            "event": "tool_start",
+            "tool": tool_name,
+            "label": label,
+            "primary_arg": str(primary_arg).upper() if primary_arg else "",
+            "args": {k: str(v)[:40] for k, v in args.items()},
+            "tool_index": idx,
+            "tool_total": self._total_expected,
+        })
+
+    async def on_tool_done(self, tool_name: str, result: Any) -> None:
+        """Called after a tool completes with its result."""
+        start = self._active.pop(tool_name, time.monotonic())
+        elapsed = round(time.monotonic() - start, 2)
+        self._completed.append(tool_name)
+
+        preview = _make_tool_preview(result) if isinstance(result, dict) else str(result)[:80]
+        total_done = len(self._completed)
+        total = max(self._total_expected, total_done)
+
+        await self._send({
+            "type": "tool_event",
+            "event": "tool_done",
+            "tool": tool_name,
+            "elapsed_s": elapsed,
+            "preview": preview,
+            "tool_index": total_done,
+            "tool_total": total,
+            "progress_pct": round((total_done / total) * 100) if total else 100,
+        })
+
+    async def on_synthesis_start(self) -> None:
+        """Called when all tools are done and synthesis streaming begins."""
+        await self._send({
+            "type": "tool_event",
+            "event": "synthesis_start",
+            "tools_completed": len(self._completed),
+            "tools_list": self._completed,
+        })
+
+    # Simple string callback interface (compatible with existing tool_callback signature)
+    async def __call__(self, tool_name: str) -> None:
+        """
+        Called by llm_client with just the tool name (existing interface).
+        We emit tool_start here; tool_done is emitted via on_tool_done separately.
+        """
+        await self.on_tool_start(tool_name, {})
+
+
 async def _execute_market_tools(
     user_text: str,
     conv_id: str,
     username: Optional[str],
     sub_intent: str,
     safe_send_json: Any,
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], "_RichToolCallback"]:
     """
     Execute MCP tools for a market query and return their results.
 
     This is the blocking phase of Type 2 (Post-Tool) streaming.
     Alpha Vantage API calls happen here synchronously before streaming begins.
 
-    The model decides which tools to call based on the user query.
-    We use the existing llm_client MCP session to execute them.
-
-    Args:
-        user_text: The user's market query
-        conv_id: Conversation ID for context
-        username: For DLP and audit
-        sub_intent: Routing sub-intent (e.g., "news", "technical_indicator")
-        safe_send_json: WebSocket send helper for tool pulse signals
+    Emits tool_event messages over WebSocket for each tool start/done.
 
     Returns:
-        List of {"tool_name": str, "result": dict} dicts
+        (tool_results, rich_callback) — callback needed to emit synthesis_start
     """
     from app.core.llm_client import llm_client
     from app.core.config.settings import settings
     from app.core.prompts import Prompts
+    from app.services.aidaan.runtime_context import runtime_context_service
 
     tool_results: List[Dict[str, Any]] = []
+    rich_cb = _RichToolCallback(safe_send_json)
 
-    # Build a tool-selection prompt — ask the model which tools to call.
-    # Include conversation history so the model can resolve tickers from prior context
-    # (e.g. user says "last 10 days" after already discussing AAPL).
-    from app.services.aidaan.runtime_context import runtime_context_service
     base_tool_prompt = (
         f"User query: {user_text}\n\n"
         f"Sub-intent: {sub_intent}\n\n"
@@ -97,33 +236,29 @@ async def _execute_market_tools(
     except Exception:
         tool_selection_prompt = base_tool_prompt
 
-    # Collect tool names as they execute for UI pulse signals
-    executed_tools: List[str] = []
-
-    async def tool_pulse(tool_name: str):
-        executed_tools.append(tool_name)
-        await safe_send_json({
-            "type": "state",
-            "state": "Thinking",
-            "detail": f"Fetching {tool_name}...",
-        })
-
     try:
-        # Use the existing MCP tool loop — this is the blocking phase
-        # The model calls Alpha Vantage tools, results come back as JSON
         raw_result = await llm_client.generate_json(
             prompt=tool_selection_prompt,
             model_override=settings.VERTEX_AI_MODEL_NAME,
             use_mcp_tools=True,
-            tool_callback=tool_pulse,
+            tool_callback=rich_cb,          # rich callback — emits tool_event messages
             system_instruction=(
                 Prompts.TRADER_SYSTEM_INSTRUCTION
                 + "\nRole: Market data gatherer. Call the required tools and return the raw data."
                 + " Do NOT synthesize or explain — just return the tool data as JSON."
+                + "\n\nTICKER RESOLUTION (CRITICAL — DO NOT call search_ticker for these):"
+                + "\n  Apple/AAPL, Google/GOOGL, Microsoft/MSFT, Amazon/AMZN, Tesla/TSLA,"
+                + "\n  Meta/META, Nvidia/NVDA, Intel/INTC, AMD/AMD, IBM/IBM,"
+                + "\n  Exxon/ExxonMobil/XOM, Oracle/ORCL, Netflix/NFLX, Uber/UBER,"
+                + "\n  Salesforce/CRM, Adobe/ADBE, PayPal/PYPL, Coinbase/COIN."
+                + "\nOnly call search_ticker if the company is NOT in the above list."
+                + "\n\nPARALLEL EFFICIENCY: When fetching data for multiple instruments,"
+                + " call all tools in a single batch (parallel), not sequentially."
+                + "\n\nOUTPUT: After all tools complete, return a single JSON object"
+                + " containing all results. Do NOT echo raw tool responses as text."
             ),
         )
 
-        # Package the result for stream_after_tools
         tool_results.append({
             "tool_name": "market_data_bundle",
             "result": raw_result,
@@ -131,16 +266,14 @@ async def _execute_market_tools(
 
         logger.info(
             "[WebSocket:Streaming] Market tools completed | tools_called=%s | conv_id=%s",
-            executed_tools,
+            rich_cb._completed,
             conv_id,
         )
 
     except Exception as tool_err:
         logger.warning("[WebSocket:Streaming] Tool execution failed: %s", tool_err)
-        # Return empty list — streaming will proceed without tool data
-        # The synthesis model will acknowledge the missing data
 
-    return tool_results
+    return tool_results, rich_cb
 
 
 async def _stream_vertex_response(
@@ -273,7 +406,8 @@ async def _stream_vertex_response(
         })
 
         # Execute MCP tools (blocking phase — Alpha Vantage calls happen here)
-        tool_results = await _execute_market_tools(
+        # rich_cb emits tool_event messages for each tool start/done
+        tool_results, rich_cb = await _execute_market_tools(
             user_text=user_text,
             conv_id=conv_id,
             username=username,
@@ -281,14 +415,10 @@ async def _stream_vertex_response(
             safe_send_json=safe_send_json,
         )
 
-        await safe_send_json({
-            "type": "state",
-            "state": "Thinking",
-            "detail": "Streaming synthesis...",
-        })
+        # Signal that all tools are done and synthesis is starting
+        await rich_cb.on_synthesis_start()
 
         # Stream the synthesis using tool results
-        # User sees tokens immediately after tools complete
         async for chunk in streaming_service.stream_after_tools(
             tool_results=tool_results,
             original_prompt=contextual_prompt,

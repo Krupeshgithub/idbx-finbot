@@ -1070,6 +1070,26 @@ class LLMClient:
                     stage="mcp.initial_turn",
                 )
 
+                # If the model returned plain text instead of a tool call (e.g. a
+                # clarification question like "Please specify the ticker"), treat it
+                # as a structured clarification response rather than crashing later.
+                if not response.function_calls:
+                    initial_text = (response.text or "").strip()
+                    if initial_text:
+                        logger.info(
+                            "[LLMClient][%s] Model returned clarification text instead of tool call: %s",
+                            trace_id or "no-trace",
+                            initial_text[:120],
+                        )
+                        if response_schema:
+                            # Wrap the clarification in the expected schema shape
+                            return {
+                                "format": "text",
+                                "reply": initial_text,
+                                "bullets": [],
+                            }
+                        return {"reply": initial_text}
+
                 max_turns = 15
                 turn = 0
                 while response.function_calls and turn < max_turns:
@@ -1171,29 +1191,44 @@ class LLMClient:
                         stage=f"mcp.followup_turn_{turn}",
                     )
 
-                if not response.function_calls and response_schema:
-                    config = self._build_json_config(
-                        schema=response_schema,
-                        system_instruction=system_instruction,
+                # After the tool loop ends, check if we need a final synthesis turn.
+                # This covers two cases:
+                #   1. response_schema is set → always do a strict-JSON synthesis pass.
+                #   2. No schema but model returned no text (e.g. followup_turn returned
+                #      finish_reason=STOP with empty text after processing tool results) →
+                #      force a synthesis turn so the fetched data is not silently discarded.
+                raw = (response.text or "").strip()
+                needs_synthesis = (not response.function_calls and response_schema) or (not raw)
+
+                if needs_synthesis:
+                    synthesis_config = (
+                        self._build_json_config(
+                            schema=response_schema,
+                            system_instruction=system_instruction,
+                        )
+                        if response_schema
+                        else self._build_text_config(system_instruction=system_instruction)
                     )
                     # Speed Optimization: Use the faster default model (Flash) for final synthesis
                     # after the reasoning model (Pro) has completed its tool calls and analysis.
                     synthesis_model = self._default_model_name
                     logger.info(
-                        "[LLMClient][%s] Switching to synthesis model: %s",
+                        "[LLMClient][%s] %s synthesis turn | model=%s | reason=%s",
                         trace_id,
-                        synthesis_model
+                        "Forced" if not raw else "Scheduled",
+                        synthesis_model,
+                        "empty_response" if not raw else "schema_required",
                     )
                     response = await self._run_generate_content(
                         client=client,
                         model=synthesis_model,
                         contents=contents,
-                        config=config,
+                        config=synthesis_config,
                         trace_id=trace_id,
                         stage="mcp.final_synthesis",
                     )
+                    raw = (response.text or "").strip()
 
-                raw = (response.text or "").strip()
                 if not raw:
                     raise ValueError("Model returned no text after MCP tool usage")
 

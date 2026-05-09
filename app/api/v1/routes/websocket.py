@@ -74,15 +74,28 @@ async def _execute_market_tools(
 
     tool_results: List[Dict[str, Any]] = []
 
-    # Build a tool-selection prompt — ask the model which tools to call
-    tool_selection_prompt = (
+    # Build a tool-selection prompt — ask the model which tools to call.
+    # Include conversation history so the model can resolve tickers from prior context
+    # (e.g. user says "last 10 days" after already discussing AAPL).
+    from app.services.aidaan.runtime_context import runtime_context_service
+    base_tool_prompt = (
         f"User query: {user_text}\n\n"
         f"Sub-intent: {sub_intent}\n\n"
         "You are a market data orchestrator. Based on the user query above, "
         "call the appropriate Alpha Vantage tools to gather the required data. "
+        "If the user query is ambiguous or does not mention a ticker, resolve it "
+        "from the conversation history provided below. "
         "Execute all necessary tools now. Do not synthesize a final answer yet — "
         "just gather the data."
     )
+    try:
+        tool_selection_prompt = runtime_context_service.build_prompt_context(
+            base_prompt=base_tool_prompt,
+            conversation_id=conv_id,
+            username=username,
+        )
+    except Exception:
+        tool_selection_prompt = base_tool_prompt
 
     # Collect tool names as they execute for UI pulse signals
     executed_tools: List[str] = []

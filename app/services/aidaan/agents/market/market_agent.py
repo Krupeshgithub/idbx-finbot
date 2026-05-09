@@ -394,12 +394,19 @@ class MarketAgent(BaseAgent):
         # Phase 1: Call tools synchronously (blocking) to get complete data
         # This uses the same MCP tool loop as non-streaming, ensuring identical
         # tool selection and data gathering logic.
+        # 
+        # IMPORTANT: We pass the orchestration prompt which asks for tool execution,
+        # NOT synthesis. The model will call MCP tools and return their results.
+        # We then use those raw results for Phase 2 synthesis.
         tool_results_raw = await llm_client.generate_json(
             prompt=orchestration_prompt,
             model_override=model_name,
             use_mcp_tools=True,
             tool_callback=tool_callback,
             system_instruction=self._build_market_system_instruction(sub_intent, control_signal),
+            # CRITICAL: Disable response cache for streaming to ensure fresh tool execution
+            # Cache can return pre-synthesized responses which breaks streaming
+            use_response_cache=False,
         )
 
         logger.info("[MarketAgent] Streaming mode | Phase 2: Streaming synthesis...")

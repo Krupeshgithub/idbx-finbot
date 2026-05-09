@@ -392,57 +392,138 @@ class MarketAgent(BaseAgent):
         logger.info("[MarketAgent] Streaming mode | Phase 1: Gathering tool data...")
 
         # Phase 1: Call tools synchronously (blocking) to get complete data
-        # This uses the same MCP tool loop as non-streaming, ensuring identical
-        # tool selection and data gathering logic.
         # 
-        # CRITICAL FIX: Use a TOOL-ONLY prompt to prevent cache from returning
-        # pre-synthesized responses. The orchestration_prompt asks for synthesis,
-        # which causes cache hits to return complete answers, breaking streaming.
+        # CRITICAL: We need to intercept the MCP tool loop BEFORE the final synthesis
+        # step to get raw tool results. The generate_json method automatically does
+        # a synthesis pass which structures the data, making Phase 2 think it's
+        # already complete.
         # 
-        # Instead, we use a tool-execution-only prompt that explicitly asks the
-        # model to ONLY call tools and return raw data, NOT synthesize.
-        tool_only_prompt = (
-            f"User Query: {text}\n\n"
-            f"=== TOOL EXECUTION PHASE ===\n"
-            f"You are in tool execution mode. Your ONLY job is to:\n"
-            f"1. Identify which Alpha Vantage tools are needed for this query\n"
-            f"2. Call those tools with the correct parameters\n"
-            f"3. Return the raw tool results as JSON\n\n"
-            f"DO NOT synthesize a response. DO NOT write a trader answer.\n"
-            f"ONLY execute tools and return their raw data.\n\n"
-            f"Common ticker mappings:\n"
-            f"- Apple → AAPL, Google → GOOGL, Microsoft → MSFT, Amazon → AMZN\n"
-            f"- Tesla → TSLA, Meta → META, Nvidia → NVDA, Exxon/Exxon Mobil/Exxon Mobile → XOM\n"
-            f"- Netflix → NFLX, Uber → UBER, Intel → INTC, AMD → AMD\n\n"
-            f"Execute all necessary tools NOW."
+        # Solution: Use a custom MCP tool execution that returns raw results directly.
+        from app.core.llm_client import llm_client
+        
+        # Build a simple prompt that will trigger tool calls
+        tool_trigger_prompt = (
+            f"Execute the necessary Alpha Vantage tools for this query: {text}\n\n"
+            f"Common ticker mappings: Apple→AAPL, Google→GOOGL, Microsoft→MSFT, "
+            f"Amazon→AMZN, Tesla→TSLA, Meta→META, Nvidia→NVDA, Exxon→XOM"
         )
         
-        tool_results_raw = await llm_client.generate_json(
-            prompt=tool_only_prompt,
-            model_override=model_name,
-            use_mcp_tools=True,
-            tool_callback=tool_callback,
-            system_instruction=(
-                "You are a tool execution agent. Call the required Alpha Vantage tools "
-                "and return their raw results. Do NOT synthesize or write a response. "
-                "ONLY execute tools."
-            ),
-        )
+        # We'll manually execute the MCP tool loop to get raw results
+        tool_results_list = []
+        
+        try:
+            # Use the internal MCP session to execute tools
+            async with llm_client._mcp_session_context(trace_id="streaming_phase1") as session:
+                if not session:
+                    logger.error("[MarketAgent] MCP session not available for streaming")
+                    tool_results_raw = {"error": "MCP session not available"}
+                else:
+                    # Get available tools
+                    mcp_tools = await llm_client._list_mcp_tools(session, trace_id="streaming_phase1")
+                    
+                    # Build tool declarations for the model
+                    from google.genai import types
+                    declarations = []
+                    for tool in mcp_tools:
+                        schema = llm_client._clean_schema(tool.inputSchema.copy())
+                        declarations.append(
+                            types.FunctionDeclaration(
+                                name=tool.name,
+                                description=tool.description or f"MCP tool: {tool.name}",
+                                parameters_json_schema=schema,
+                            )
+                        )
+                    
+                    # Create a config that will trigger tool calls
+                    tool_config = types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=1000,
+                        tools=[types.Tool(function_declarations=declarations)],
+                        system_instruction=(
+                            "You are a tool execution agent. Analyze the query and call "
+                            "the appropriate Alpha Vantage tools. Common mappings: "
+                            "Apple→AAPL, Google→GOOGL, Exxon/Exxon Mobil→XOM"
+                        ),
+                    )
+                    
+                    # Get the client
+                    client = llm_client._ensure_client()
+                    if not client:
+                        tool_results_raw = {"error": "Vertex AI client not available"}
+                    else:
+                        # Initial call to trigger tools
+                        response = await llm_client._run_generate_content(
+                            client=client,
+                            model=model_name,
+                            contents=tool_trigger_prompt,
+                            config=tool_config,
+                            trace_id="streaming_phase1",
+                            stage="streaming.tool_trigger",
+                        )
+                        
+                        # Execute the tool calls
+                        if response.function_calls:
+                            for function_call in response.function_calls:
+                                tool_name = function_call.name
+                                tool_args = dict(function_call.args or {})
+                                
+                                logger.info(
+                                    "[MarketAgent] Phase 1: Executing tool %s with args %s",
+                                    tool_name, tool_args
+                                )
+                                
+                                if tool_callback:
+                                    await tool_callback(tool_name)
+                                
+                                result = await llm_client._execute_mcp_tool(
+                                    session, tool_name, tool_args, trace_id="streaming_phase1"
+                                )
+                                
+                                tool_results_list.append({
+                                    "tool": tool_name,
+                                    "args": tool_args,
+                                    "result": result
+                                })
+                        
+                        # Convert to a simple dict for Phase 2
+                        tool_results_raw = {
+                            "tools_executed": len(tool_results_list),
+                            "results": tool_results_list
+                        }
+        except Exception as e:
+            logger.error("[MarketAgent] Phase 1 tool execution failed: %s", e)
+            tool_results_raw = {"error": str(e)}
 
         logger.info("[MarketAgent] Streaming mode | Phase 2: Streaming synthesis...")
 
         # Phase 2: Stream the synthesis using the gathered tool data
         # Build a synthesis prompt that includes the tool results as context
-        tool_context = f"Tool Results:\n{json.dumps(tool_results_raw, ensure_ascii=False, indent=2)[:12000]}"
+        
+        # Format tool results into a readable context
+        tool_context_parts = []
+        if isinstance(tool_results_raw, dict):
+            if "error" in tool_results_raw:
+                tool_context_parts.append(f"Error: {tool_results_raw['error']}")
+            elif "results" in tool_results_raw:
+                for item in tool_results_raw["results"]:
+                    tool_name = item.get("tool", "unknown")
+                    result = item.get("result", {})
+                    tool_context_parts.append(f"Tool: {tool_name}\nData: {json.dumps(result, ensure_ascii=False)[:3000]}")
+            else:
+                # Fallback: use the raw dict
+                tool_context_parts.append(json.dumps(tool_results_raw, ensure_ascii=False)[:12000])
+        
+        tool_context = "\n\n".join(tool_context_parts) if tool_context_parts else "No tool data available"
         
         # DEBUG: Log tool context length
-        logger.info(f"[MarketAgent] 🔍 Tool context length: {len(tool_context)} chars | tool_results_raw keys: {list(tool_results_raw.keys()) if isinstance(tool_results_raw, dict) else 'not_dict'}")
+        logger.info(f"[MarketAgent] 🔍 Tool context length: {len(tool_context)} chars | tool_results_raw type: {type(tool_results_raw)}")
         
         synthesis_prompt = (
             f"User Query: {text}\n\n"
+            f"=== RAW TOOL DATA ===\n"
             f"{tool_context}\n\n"
             f"=== SYNTHESIS INSTRUCTIONS ===\n"
-            f"Using the tool results above, write a complete professional trader response.\n"
+            f"Using the tool data above, write a complete professional trader response.\n"
             f"Structure (MANDATORY — all 4 parts required):\n"
             f"  [Direct Answer] — State the key fact(s) directly (price, rate, data summary).\n"
             f"  [Market Insight] — Explain what the data means in trading terms (flows, momentum, context).\n"

@@ -394,10 +394,12 @@ async def _stream_vertex_response(
             # Unpack tuple: (response_metadata, streaming_generator)
             if isinstance(result, tuple) and len(result) == 2:
                 agent_response, streaming_chunks = result
+                logger.info(f"[WebSocket:Streaming] ✅ Tuple unpacked successfully | has_streaming_chunks={streaming_chunks is not None}")
             else:
                 # Fallback: non-streaming response
                 agent_response = result
                 streaming_chunks = None
+                logger.warning(f"[WebSocket:Streaming] ⚠️ Result is NOT a tuple | type={type(result)} | falling back to non-streaming")
         except Exception as agent_exc:
             logger.error("[WebSocket:Streaming] Market agent failed: %s", agent_exc)
             agent_error = str(agent_exc)
@@ -415,6 +417,7 @@ async def _stream_vertex_response(
 
         # Check if streaming_chunks generator is available
         if streaming_chunks is None:
+            logger.warning(f"[WebSocket:Streaming] ⚠️ streaming_chunks is None - using fallback word-by-word streaming")
             # Fallback: agent returned a pre-built response (shouldn't happen with enable_streaming=True)
             reply_text = (agent_response.reply or "").strip()
             if not reply_text:
@@ -454,6 +457,7 @@ async def _stream_vertex_response(
                         full_response += "\n\n**IDBX Data Provenance:** Alpha Vantage Live Feed"
         else:
             # Real token-by-token streaming from Vertex AI
+            logger.info(f"[WebSocket:Streaming] 🚀 Starting REAL token-by-token streaming from Vertex AI")
             resp_model = (agent_response.model.llm if agent_response.model else "vertex") if agent_response else "vertex"
             first_token = True
             
@@ -698,6 +702,9 @@ async def aidaan_websocket(websocket: WebSocket):
                     "type": "state", "state": "Listening", "detail": "Trader input received.",
                 }):
                     break
+
+                # DEBUG: Log streaming flag
+                logger.info(f"[WebSocket] Message received | enable_streaming={enable_streaming} | user={user_id} | text={user_text[:60]}")
 
                 if enable_streaming:
                     logger.info("[WebSocket] STREAMING mode | user=%s | conv_id=%s | text=%s",

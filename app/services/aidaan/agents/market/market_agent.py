@@ -313,6 +313,7 @@ class MarketAgent(BaseAgent):
             # 1. Call tools synchronously (blocking) to gather complete data
             # 2. Stream the synthesis phase token-by-token
             if enable_streaming and tool_mode == "full":
+                logger.info(f"[MarketAgent] 🔥 STREAMING PATH ACTIVATED | enable_streaming={enable_streaming} | tool_mode={tool_mode}")
                 return await self._handle_message_streaming(
                     text=text,
                     orchestration_prompt=orchestration_prompt,
@@ -325,6 +326,7 @@ class MarketAgent(BaseAgent):
                 )
 
             # Non-streaming path (original behavior)
+            logger.info(f"[MarketAgent] 📝 NON-STREAMING PATH | enable_streaming={enable_streaming} | tool_mode={tool_mode}")
             response_data = await self.generate_json_response(
                 orchestration_prompt,
                 conversation_id=conversation_id,

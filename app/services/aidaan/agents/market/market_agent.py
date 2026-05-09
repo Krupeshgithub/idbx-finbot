@@ -407,6 +407,10 @@ class MarketAgent(BaseAgent):
         # Phase 2: Stream the synthesis using the gathered tool data
         # Build a synthesis prompt that includes the tool results as context
         tool_context = f"Tool Results:\n{json.dumps(tool_results_raw, ensure_ascii=False, indent=2)[:12000]}"
+        
+        # DEBUG: Log tool context length
+        logger.info(f"[MarketAgent] 🔍 Tool context length: {len(tool_context)} chars | tool_results_raw keys: {list(tool_results_raw.keys()) if isinstance(tool_results_raw, dict) else 'not_dict'}")
+        
         synthesis_prompt = (
             f"User Query: {text}\n\n"
             f"{tool_context}\n\n"
@@ -422,6 +426,9 @@ class MarketAgent(BaseAgent):
             f"IMPORTANT: Write a FULL response — do not truncate or summarise prematurely.\n"
             f"Do NOT wrap the response in JSON or code blocks — return plain text only."
         )
+        
+        # DEBUG: Log synthesis prompt length
+        logger.info(f"[MarketAgent] 🔍 Synthesis prompt length: {len(synthesis_prompt)} chars | preview: {synthesis_prompt[:200]}...")
 
         # Create a response object (metadata only, no reply text yet)
         response = self.build_message_response(

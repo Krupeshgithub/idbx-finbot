@@ -1,53 +1,50 @@
 """
 AIDAAN Vertex AI Streaming Service
 ====================================
-Yeh file Vertex AI ke generate_content_stream() ka wrapper hai.
+Wrapper around Vertex AI's generate_content_stream() for real token-by-token streaming.
 
-ARCHITECTURE EXPLANATION (Line by Line):
-=========================================
+ARCHITECTURE:
+=============
+Vertex AI SDK exposes two generation methods:
+  1. generate_content()        -> Blocking, returns the full response at once
+  2. generate_content_stream() -> Streaming, yields one chunk at a time as the model generates
 
-Vertex AI SDK mein 2 methods hain:
-  1. generate_content()        → Blocking, pura response ek saath aata hai
-  2. generate_content_stream() → Streaming, ek ek token aata hai as model generates
+This file uses method 2 — real streaming from Vertex AI.
 
-Yeh file Type 2 use karti hai — real streaming from Vertex AI.
+IMPORTANT CONSTRAINTS:
+======================
+1. response_mime_type="application/json" is INCOMPATIBLE with streaming.
+   The streaming path intentionally omits JSON mode and uses plain text.
 
-IMPORTANT CONSTRAINTS (Jo tumhara code check karke pata chala):
-================================================================
-1. response_mime_type="application/json" → streaming ke saath INCOMPATIBLE hai
-   Isliye streaming path mein JSON mode OFF rahega, text mode ON.
+2. MCP Tools + Streaming:
+   - Tools execute synchronously first (Alpha Vantage calls are blocking)
+   - Only the FINAL SYNTHESIS step is streamed
+   - This is the correct approach — tool results are not chunked
 
-2. MCP Tools ke saath streaming:
-   - Tools pehle synchronously execute hote hain (Alpha Vantage calls blocking hain)
-   - Sirf FINAL SYNTHESIS step ko stream kar sakte ho
-   - Yahi sahi approach hai — tools ka result chunked nahi hota
+3. ThreadPoolExecutor for blocking iterator:
+   - generate_content_stream() returns a synchronous iterator
+   - It cannot be called directly inside an async function (it blocks the event loop)
+   - Solution: run it in a ThreadPoolExecutor, pass chunks via asyncio.Queue
 
-3. ThreadPoolExecutor mein blocking iterator:
-   - generate_content_stream() ek synchronous iterator return karta hai
-   - Isko asyncio loop mein directly call nahi kar sakte
-   - Solution: run_in_executor mein run karo, asyncio.Queue se chunks pass karo
+4. Thinking tokens (available in gemini-2.5-pro):
+   - chunk.candidates[0].content.parts may contain parts with thought=True
+   - These are streamed separately as "thinking_token" type
 
-4. Thinking tokens (gemini-2.5-pro mein available):
-   - chunk.candidates[0].content.parts mein thought=True wale parts hote hain
-   - Inhe alag stream type se bhejo
-
-HOW STREAMING ACTUALLY WORKS IN THIS CODE:
-===========================================
-
-Step 1: User message aata hai WebSocket se
-Step 2: StreamingService.stream_response_async() call hoti hai
-Step 3: Vertex AI ka generate_content_stream() ek thread mein chalta hai
-Step 4: Har chunk asyncio.Queue mein dala jaata hai
-Step 5: Async loop queue se chunks uthata hai aur WebSocket pe bhejta hai
-Step 6: Frontend pe token by token text appear hota hai
+HOW STREAMING WORKS IN THIS CODE:
+===================================
+Step 1: User message arrives via WebSocket
+Step 2: StreamingService.stream_response_async() is called
+Step 3: Vertex AI's generate_content_stream() runs in a dedicated thread
+Step 4: Each chunk is placed into an asyncio.Queue
+Step 5: The async loop reads chunks from the queue and sends them over WebSocket
+Step 6: The frontend receives and renders tokens one by one
 
 REAL vs FAKE STREAMING:
 ========================
-FAKE: Pura response generate karo, phir character by character split karke bhejo
-REAL: Vertex AI MODEL khud token by token generate karta hai, hum sirf relay karte hain
+FAKE: Generate the full response, then split it character by character and send
+REAL: The Vertex AI model generates tokens incrementally; we relay them as they arrive
 
-Yeh code REAL streaming karta hai. Vertex AI ka model jaise generate karta hai,
-waise hi frontend pe dikhai deta hai.
+This code performs REAL streaming.
 """
 
 import asyncio
@@ -65,9 +62,8 @@ from app.core.dlp_client import dlp_client
 
 logger = logging.getLogger(__name__)
 
-# Dedicated thread pool for streaming calls
-# Kyunki generate_content_stream() synchronous iterator hai,
-# isko ThreadPoolExecutor mein hi chalana padega
+# Dedicated thread pool for streaming calls.
+# generate_content_stream() is a synchronous iterator and must run in a thread.
 _stream_executor = ThreadPoolExecutor(
     max_workers=10,
     thread_name_prefix="vertex_stream_worker",
@@ -76,15 +72,15 @@ _stream_executor = ThreadPoolExecutor(
 
 class StreamChunk:
     """
-    Ek single streaming chunk ka representation.
-    
+    Represents a single streaming chunk from Vertex AI.
+
     chunk_type values:
-      - "thinking_token"  : Model ka internal reasoning (sirf pro models mein)
-      - "response_token"  : Actual response text jo user ko dikhana hai
-      - "stream_complete" : Streaming khatam, stats ke saath
-      - "stream_error"    : Kuch galat hua
-      - "tool_start"      : MCP tool call shuru hua
-      - "tool_done"       : MCP tool call complete hua
+      - "thinking_token"  : Model's internal reasoning (pro models only)
+      - "response_token"  : Actual response text to display to the user
+      - "stream_complete" : Streaming finished, includes final stats
+      - "stream_error"    : An error occurred during streaming
+      - "tool_start"      : An MCP tool call has started
+      - "tool_done"       : An MCP tool call has completed
     """
     def __init__(
         self,
@@ -109,10 +105,11 @@ class StreamChunk:
 
 class StreamingService:
     """
-    Vertex AI se real streaming karne ka service.
-    
-    Tumhare existing LLMClient ke parallel chalega — woh non-streaming ke liye,
-    yeh streaming ke liye. Dono ek hi Vertex AI client use karte hain.
+    Service for real token-by-token streaming from Vertex AI.
+
+    Runs in parallel with the existing LLMClient — that client handles
+    non-streaming calls, this service handles streaming. Both share the
+    same underlying Vertex AI client instance.
     """
 
     def __init__(self) -> None:
@@ -121,17 +118,15 @@ class StreamingService:
 
     def _ensure_client(self) -> Optional[genai.Client]:
         """
-        Vertex AI client initialize karo.
-        
-        Tumhara existing llm_client.py ka _ensure_client() same logic hai.
-        Hum woh reuse karte hain duplicate na ho isliye.
+        Initialize or reuse the Vertex AI client.
+
+        Reuses the existing llm_client's initialized client to avoid
+        double credential setup.
         """
         if self._client is not None:
             return self._client
 
         try:
-            # Import existing LLM client ka client object reuse karo
-            # Isse credentials double set nahi honge
             from app.core.llm_client import llm_client
             if llm_client._client is not None:
                 self._client = llm_client._client
@@ -140,7 +135,7 @@ class StreamingService:
         except Exception as e:
             logger.warning("[StreamingService] Could not reuse LLM client: %s", e)
 
-        # Fallback: apna client banao
+        # Fallback: initialize a new client
         try:
             import os
             has_adc = bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
@@ -174,33 +169,30 @@ class StreamingService:
         enable_thinking: bool = False,
     ) -> types.GenerateContentConfig:
         """
-        Streaming ke liye config banao.
-        
+        Build the GenerateContentConfig for a streaming call.
+
         CRITICAL DIFFERENCE from non-streaming config:
-        ================================================
-        Non-streaming mein: response_mime_type="application/json" hota hai
-        Streaming mein: response_mime_type NAHI lagani — plain text stream hogi
-        
-        Kyun? Vertex AI ka streaming API JSON mode ke saath properly work
-        nahi karta chunked responses mein — partial JSON parse nahi ho sakta.
-        
-        Thinking tokens ke liye: thinking_config add karo (sirf pro models mein)
+        -----------------------------------------------
+        Non-streaming uses: response_mime_type="application/json"
+        Streaming intentionally omits response_mime_type (plain text stream)
+
+        Reason: Vertex AI's streaming API does not work correctly with JSON mode
+        because partial JSON chunks cannot be parsed incrementally.
+
+        Thinking tokens are enabled via thinking_config (pro models only).
         """
         from app.core.llm_client import llm_client
-        
-        # System instruction mein language + timestamp inject karo
-        # (same as existing LLMClient._apply_language_instruction)
+
+        # Inject language instruction and timestamp (same as LLMClient._apply_language_instruction)
         full_system_instruction = llm_client._apply_language_instruction(system_instruction)
 
         config_kwargs: Dict[str, Any] = {
             "temperature": settings.VERTEX_AI_TEMPERATURE,
             "max_output_tokens": settings.VERTEX_AI_MAX_OUTPUT_TOKENS,
             "system_instruction": full_system_instruction,
-            # NOTE: response_mime_type intentionally OMITTED for streaming
-            # JSON mode aur streaming incompatible hain Vertex AI mein
+            # NOTE: response_mime_type intentionally omitted — JSON mode is incompatible with streaming
         }
 
-        # Thinking tokens enable karo (sirf gemini-2.5-pro mein kaam karta hai)
         if enable_thinking:
             config_kwargs["thinking_config"] = types.ThinkingConfig(
                 include_thoughts=True,
@@ -219,39 +211,37 @@ class StreamingService:
         loop: asyncio.AbstractEventLoop,
     ) -> None:
         """
-        Yeh function ek dedicated thread mein chalta hai.
-        
-        Kyun thread chahiye:
-        ====================
-        generate_content_stream() ek SYNCHRONOUS generator/iterator return karta hai.
-        Isko directly async function mein use nahi kar sakte kyunki yeh blocking hai.
-        
+        Runs generate_content_stream() inside a dedicated thread.
+
+        Why a thread is required:
+        --------------------------
+        generate_content_stream() returns a SYNCHRONOUS generator/iterator.
+        Calling it directly in an async function would block the event loop.
+
         Solution:
-        =========
-        1. Is function ko ThreadPoolExecutor mein run karo
-        2. Har chunk ko asyncio.Queue mein dalo (thread-safe)
-        3. Async side queue se read karta rahe
-        
-        Queue mein kya dalta hai:
-        ========================
-        - dict: ek chunk ka data
-        - None: signal ki streaming khatam ho gayi
-        - Exception object: kuch galat hua
+        ---------
+        1. Run this function in a ThreadPoolExecutor
+        2. Push each chunk into an asyncio.Queue (thread-safe via call_soon_threadsafe)
+        3. The async side reads from the queue and yields chunks
+
+        Queue sentinel values:
+        ----------------------
+        - dict  : a normal chunk with keys "is_thinking" and "text"
+        - None  : signals that streaming has completed
+        - Exception object : signals that an error occurred in the thread
         """
         try:
             logger.info("[StreamingService] Starting generate_content_stream in thread | model=%s", model)
-            
-            # *** YAHI HAI REAL VERTEX AI STREAMING CALL ***
-            # generate_content_stream() calls the Vertex AI API and returns
-            # chunks as they are generated by the model
+
+            # THE REAL VERTEX AI STREAMING CALL
+            # generate_content_stream() calls the Vertex AI API and yields
+            # chunks as the model generates them token by token.
             response_stream = client.models.generate_content_stream(
                 model=model,
                 contents=contents,
                 config=config,
             )
 
-            # Har chunk ko process karo
-            # Yeh loop tab tak chalta hai jab tak model tokens generate karta rahe
             for chunk in response_stream:
                 if not chunk.candidates:
                     continue
@@ -261,10 +251,10 @@ class StreamingService:
                     continue
 
                 for part in candidate.content.parts:
-                    # Thinking token check — sirf pro models mein hota hai
-                    # part.thought == True matlab yeh model ka internal reasoning hai
+                    # part.thought == True means this is the model's internal reasoning
+                    # Only available in pro models with thinking enabled
                     is_thinking = getattr(part, "thought", False)
-                    
+
                     part_text = getattr(part, "text", "") or ""
                     if not part_text:
                         continue
@@ -274,16 +264,15 @@ class StreamingService:
                         "text": part_text,
                     }
 
-                    # Thread-safe tarike se queue mein dalo
-                    # loop.call_soon_threadsafe asyncio event loop ko signal karta hai
+                    # Thread-safe: push to asyncio queue from a non-async thread
                     loop.call_soon_threadsafe(queue.put_nowait, chunk_data)
 
-            # None = streaming complete signal
+            # None = streaming complete sentinel
             loop.call_soon_threadsafe(queue.put_nowait, None)
             logger.info("[StreamingService] Stream completed in thread | model=%s", model)
 
         except Exception as exc:
-            # Exception ko queue mein dalo taaki async side handle kar sake
+            # Push the exception into the queue so the async side can handle it
             logger.error("[StreamingService] Stream error in thread: %s", exc)
             loop.call_soon_threadsafe(queue.put_nowait, exc)
 
@@ -297,33 +286,33 @@ class StreamingService:
         username: Optional[str] = None,
     ) -> AsyncIterator[StreamChunk]:
         """
-        Vertex AI se real streaming — main async generator.
-        
-        Yeh function yield karta hai StreamChunk objects as tokens arrive from Vertex AI.
-        
+        Main async generator for real token-by-token streaming from Vertex AI.
+
+        Yields StreamChunk objects as tokens arrive from the model.
+
         Usage:
-        ======
+        ------
         async for chunk in streaming_service.stream_response_async(prompt):
             await websocket.send_json(chunk.to_dict())
-        
-        What happens internally:
-        ========================
-        1. DLP redaction on prompt
-        2. Queue + thread setup
-        3. Thread mein generate_content_stream() call
-        4. Queue se chunks read karke yield karo
-        5. Completion stats yield karo
-        
+
+        Internal flow:
+        --------------
+        1. DLP redaction on the prompt
+        2. Set up asyncio.Queue and ThreadPoolExecutor thread
+        3. Thread calls generate_content_stream() and pushes chunks to queue
+        4. Async loop reads from queue and yields StreamChunk objects
+        5. Final stream_complete chunk includes latency stats
+
         Args:
-            prompt: User ka message ya formatted prompt
-            model_name: Vertex AI model name (default: settings.VERTEX_AI_MODEL_NAME)
+            prompt: User message or formatted prompt string
+            model_name: Vertex AI model name (defaults to settings.VERTEX_AI_MODEL_NAME)
             system_instruction: System prompt
-            enable_thinking: Thinking tokens ON/OFF (sirf pro models mein)
-            conversation_id: For logging
-            username: For DLP/audit
-        
+            enable_thinking: Enable thinking tokens (pro models only)
+            conversation_id: Used for logging and tracing
+            username: Used for DLP and audit
+
         Yields:
-            StreamChunk objects with types: thinking_token, response_token, stream_complete, stream_error
+            StreamChunk with types: thinking_token, response_token, stream_complete, stream_error
         """
         model = model_name or settings.VERTEX_AI_MODEL_NAME
         start_time = time.monotonic()
@@ -340,7 +329,7 @@ class StreamingService:
             )
             return
 
-        # DLP redaction — same as existing code
+        # DLP redaction — same as existing non-streaming path
         try:
             prompt = await asyncio.get_event_loop().run_in_executor(
                 _stream_executor, dlp_client.redact_pii, prompt
@@ -348,19 +337,18 @@ class StreamingService:
         except Exception as dlp_err:
             logger.warning("[StreamingService] DLP redaction failed (continuing): %s", dlp_err)
 
-        # Config build karo — WITHOUT JSON mode
+        # Build config WITHOUT JSON mode
         config = self._build_streaming_config(
             system_instruction=system_instruction,
             enable_thinking=enable_thinking,
         )
 
-        # Queue banao thread aur async ke beech communication ke liye
-        # maxsize=100 taaki memory overflow na ho
+        # Queue for thread <-> async communication
+        # maxsize=100 prevents memory overflow if the consumer is slow
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         loop = asyncio.get_event_loop()
 
-        # Thread mein streaming call shuru karo
-        # run_in_executor non-blocking hai — async loop block nahi hoga
+        # Start the streaming thread (non-blocking — event loop is not blocked)
         future = loop.run_in_executor(
             _stream_executor,
             self._run_stream_in_thread,
@@ -377,10 +365,9 @@ class StreamingService:
             model, conversation_id, enable_thinking
         )
 
-        # Async loop — queue se chunks read karo aur yield karo
         try:
             while True:
-                # Queue se next item lo — max 60 seconds wait
+                # Wait for the next chunk from the thread (60s timeout)
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=60.0)
                 except asyncio.TimeoutError:
@@ -395,7 +382,7 @@ class StreamingService:
                 if item is None:
                     break
 
-                # Exception = kuch galat hua thread mein
+                # Exception = error in the thread
                 if isinstance(item, Exception):
                     error_msg = str(item)
                     logger.error("[StreamingService] Stream error received: %s", error_msg)
@@ -405,21 +392,21 @@ class StreamingService:
                     )
                     break
 
-                # Normal chunk — process karo
+                # Normal chunk
                 is_thinking = item.get("is_thinking", False)
                 text = item.get("text", "")
 
                 if not text:
                     continue
 
-                # TTFT (Time To First Token) track karo
+                # Track Time To First Token (TTFT)
                 if first_token_time is None:
                     first_token_time = time.monotonic()
                     ttft_ms = (first_token_time - start_time) * 1000
                     logger.info("[StreamingService] First token received | TTFT=%.1fms | model=%s", ttft_ms, model)
 
                 if is_thinking:
-                    # Thinking token — model ka internal reasoning
+                    # Thinking token — model's internal reasoning, shown separately in UI
                     thinking_token_count += 1
                     yield StreamChunk(
                         chunk_type="thinking_token",
@@ -430,7 +417,7 @@ class StreamingService:
                         },
                     )
                 else:
-                    # Response token — actual answer jo user ko dikhana hai
+                    # Response token — the actual answer text
                     response_token_count += 1
                     full_response_text += text
                     yield StreamChunk(
@@ -449,11 +436,11 @@ class StreamingService:
                 content=f"Unexpected streaming error: {exc}",
             )
         finally:
-            # Thread future cancel karo agar abhi bhi chal raha ho
+            # Cancel the thread future if it is still running
             if not future.done():
                 future.cancel()
 
-        # Final stats chunk — streaming khatam hone ke baad
+        # Final stats chunk — sent after all tokens have been yielded
         total_elapsed_ms = (time.monotonic() - start_time) * 1000
         ttft_final = (
             round((first_token_time - start_time) * 1000, 2)
@@ -497,40 +484,42 @@ class StreamingService:
         username: Optional[str] = None,
     ) -> AsyncIterator[StreamChunk]:
         """
-        MCP tools execute hone ke BAAD streaming synthesis.
-        
-        Yeh tumhare use case ke liye sabse important method hai.
-        
+        Stream the final synthesis AFTER MCP tools have already executed.
+
+        This is the correct pattern for Type 2 (Post-Tool) streaming:
+
         Flow:
-        =====
-        1. Alpha Vantage / MCP tools already call ho chuke hain (non-streaming)
-        2. Tool results available hain
-        3. Ab Vertex AI ko in results ke saath final answer stream karo
-        
-        Kyun yeh pattern sahi hai:
-        ==========================
-        Alpha Vantage API khud streaming nahi karta — JSON response deta hai.
-        Tools ka result pehle fully aana chahiye, phir synthesis stream hoti hai.
-        
+        -----
+        1. Alpha Vantage / MCP tools have already been called (non-streaming, blocking)
+        2. Tool results are available as structured dicts
+        3. Vertex AI streams the final synthesis using those results
+
+        Why this pattern is correct:
+        ----------------------------
+        Alpha Vantage does not stream — it returns a complete JSON response.
+        Tools must finish before synthesis can begin.
+        Only the synthesis step is streamed to the user.
+
         Contents format:
-        ================
-        Hum tool results ko conversation history format mein dete hain.
-        Yeh wahi format hai jo tumhara existing _generate_json_with_mcp_tools uses.
-        
+        ----------------
+        Tool results are formatted as a readable context block and injected
+        into the synthesis prompt. This mirrors the format used by
+        _generate_json_with_mcp_tools in the non-streaming path.
+
         Args:
-            tool_results: List of {tool_name, result} dicts from MCP tools
-            original_prompt: User ka original question
-            system_instruction: System prompt
+            tool_results: List of {"tool_name": str, "result": dict} from MCP tools
+            original_prompt: The user's original question
+            system_instruction: System prompt for the synthesis model
             model_name: Model to use for synthesis
-            conversation_id: For tracking
+            conversation_id: For tracing and logging
             username: For DLP
-        
+
         Yields:
-            StreamChunk objects — same as stream_response_async
+            StreamChunk objects — same types as stream_response_async
         """
         model = model_name or settings.VERTEX_AI_MODEL_NAME
 
-        # Tool results ko readable format mein convert karo
+        # Format tool results into a readable context block
         tool_context_parts = []
         for i, tool_result in enumerate(tool_results):
             tool_name = tool_result.get("tool_name", f"tool_{i}")
@@ -541,15 +530,15 @@ class StreamingService:
 
         tool_context = "\n\n".join(tool_context_parts)
 
-        # Final synthesis prompt banao
+        # Build the synthesis prompt
         synthesis_prompt = (
             f"{original_prompt}\n\n"
             f"=== TOOL RESULTS ===\n{tool_context}\n\n"
             f"=== INSTRUCTIONS ===\n"
-            f"Upar diye gaye tool results ke basis par professional trader response do.\n"
-            f"Structure: [Direct Answer] → [Market Insight] → [Trade Implication] → [Optional Follow-up]\n"
-            f"CRITICAL: Return ONLY plain text response — no JSON, no markdown code blocks.\n"
-            f"Professional trading desk language use karo."
+            f"Based on the tool results above, provide a professional trader response.\n"
+            f"Structure: [Direct Answer] -> [Market Insight] -> [Trade Implication] -> [Optional Follow-up]\n"
+            f"CRITICAL: Return ONLY plain text — no JSON, no markdown code blocks.\n"
+            f"Use professional trading desk language."
         )
 
         logger.info(
@@ -557,12 +546,12 @@ class StreamingService:
             model, len(tool_results), conversation_id
         )
 
-        # stream_response_async ko delegate karo
+        # Delegate to stream_response_async
         async for chunk in self.stream_response_async(
             prompt=synthesis_prompt,
             model_name=model,
             system_instruction=system_instruction,
-            enable_thinking=False,  # Post-tool synthesis mein thinking OFF
+            enable_thinking=False,  # Thinking OFF for post-tool synthesis
             conversation_id=conversation_id,
             username=username,
         ):

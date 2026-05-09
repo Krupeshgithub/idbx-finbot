@@ -2,44 +2,35 @@
 AIDAAN WebSocket Routes — Streaming Enabled Version
 =====================================================
 
-CHANGES FROM ORIGINAL websocket.py:
-======================================
-1. `enable_streaming` flag check add kiya — client se aata hai
-2. `stream_vertex_response()` naya function add kiya
-3. MCP tools ka pre-execution + streaming synthesis pattern add kiya
-4. Non-streaming path unchanged raha (backward compatible)
-
 STREAMING FLOW (Step by Step):
 ================================
 1. Client sends: {"type": "chat", "text": "...", "enable_streaming": true}
 2. Server checks enable_streaming flag
-3. If true → stream_vertex_response() call hoti hai
-4. Coordinator routing hoti hai (agent decide hota hai)
+3. If true -> _stream_vertex_response() is called
+4. Coordinator routing determines which agent handles the query
 5. Agent-specific streaming path:
-   a. Greeting/Risk/Simple → Direct Vertex streaming
-   b. Market (with tools) → MCP tools first → Vertex streaming synthesis
-6. Har chunk WebSocket pe bheja jaata hai
-7. Frontend pe token by token text appear hota hai
+   a. Market (with tools) -> MCP tools execute first (blocking) -> Vertex streaming synthesis
+   b. Greeting / Risk / General -> Direct Vertex streaming (no tools)
+6. Each token chunk is sent over WebSocket as it arrives
+7. Frontend renders tokens one by one
 
 NON-STREAMING PATH:
 ====================
-enable_streaming=false ya absent → existing coordinator_agent.handle_message() path
-Same as before — no breaking change.
+enable_streaming=false or absent -> existing coordinator_agent.handle_message() path
+No breaking changes to the existing flow.
 
 WHY WEBSOCKET NOT SSE (Server-Sent Events):
 ============================================
-Tumhare existing architecture mein WebSocket already hai.
-WebSocket streaming ke liye better hai kyunki:
-- Bidirectional (tool_pulse callbacks work karte hain)
-- Connection already established hai
-- State machine signals (Thinking, Listening) already use ho raha hai
+The existing architecture already uses WebSocket for bidirectional communication
+(tool_pulse callbacks, state machine signals). Streaming over the same connection
+avoids adding a second transport layer.
 """
 
 import asyncio
 import json
 import logging
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.services.aidaan.agents.coordinator.coordinator_agent import coordinator_agent
 from app.services.aidaan.streaming_service import StreamChunk, streaming_service
@@ -51,45 +42,135 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+async def _execute_market_tools(
+    user_text: str,
+    conv_id: str,
+    username: Optional[str],
+    sub_intent: str,
+    safe_send_json: Any,
+) -> List[Dict[str, Any]]:
+    """
+    Execute MCP tools for a market query and return their results.
+
+    This is the blocking phase of Type 2 (Post-Tool) streaming.
+    Alpha Vantage API calls happen here synchronously before streaming begins.
+
+    The model decides which tools to call based on the user query.
+    We use the existing llm_client MCP session to execute them.
+
+    Args:
+        user_text: The user's market query
+        conv_id: Conversation ID for context
+        username: For DLP and audit
+        sub_intent: Routing sub-intent (e.g., "news", "technical_indicator")
+        safe_send_json: WebSocket send helper for tool pulse signals
+
+    Returns:
+        List of {"tool_name": str, "result": dict} dicts
+    """
+    from app.core.llm_client import llm_client
+    from app.core.config.settings import settings
+    from app.core.prompts import Prompts
+
+    tool_results: List[Dict[str, Any]] = []
+
+    # Build a tool-selection prompt — ask the model which tools to call
+    tool_selection_prompt = (
+        f"User query: {user_text}\n\n"
+        f"Sub-intent: {sub_intent}\n\n"
+        "You are a market data orchestrator. Based on the user query above, "
+        "call the appropriate Alpha Vantage tools to gather the required data. "
+        "Execute all necessary tools now. Do not synthesize a final answer yet — "
+        "just gather the data."
+    )
+
+    # Collect tool names as they execute for UI pulse signals
+    executed_tools: List[str] = []
+
+    async def tool_pulse(tool_name: str):
+        executed_tools.append(tool_name)
+        await safe_send_json({
+            "type": "state",
+            "state": "Thinking",
+            "detail": f"Fetching {tool_name}...",
+        })
+
+    try:
+        # Use the existing MCP tool loop — this is the blocking phase
+        # The model calls Alpha Vantage tools, results come back as JSON
+        raw_result = await llm_client.generate_json(
+            prompt=tool_selection_prompt,
+            model_override=settings.VERTEX_AI_MODEL_NAME,
+            use_mcp_tools=True,
+            tool_callback=tool_pulse,
+            system_instruction=(
+                Prompts.TRADER_SYSTEM_INSTRUCTION
+                + "\nRole: Market data gatherer. Call the required tools and return the raw data."
+                + " Do NOT synthesize or explain — just return the tool data as JSON."
+            ),
+        )
+
+        # Package the result for stream_after_tools
+        tool_results.append({
+            "tool_name": "market_data_bundle",
+            "result": raw_result,
+        })
+
+        logger.info(
+            "[WebSocket:Streaming] Market tools completed | tools_called=%s | conv_id=%s",
+            executed_tools,
+            conv_id,
+        )
+
+    except Exception as tool_err:
+        logger.warning("[WebSocket:Streaming] Tool execution failed: %s", tool_err)
+        # Return empty list — streaming will proceed without tool data
+        # The synthesis model will acknowledge the missing data
+
+    return tool_results
+
+
 async def _stream_vertex_response(
     *,
     websocket: WebSocket,
     user_text: str,
     conv_id: str,
     context: Dict[str, Any],
-    safe_send_json: Any,  # callable
+    safe_send_json: Any,
 ) -> Optional[str]:
     """
-    Vertex AI se streaming response fetch karo aur WebSocket pe bhejo.
-    
-    Yeh function do paths handle karta hai:
-    
-    PATH A — Simple Streaming (Greeting, Risk, General):
-    =====================================================
-    Seedha Vertex AI se stream karo.
-    Coordinator routing hoti hai, phir streaming starts.
-    
-    PATH B — Tool-Augmented Streaming (Market queries):
-    ====================================================
-    Step 1: Coordinator routing karo (kaunsa agent?)
-    Step 2: Agar market agent hai → MCP tools call karo (blocking)
-    Step 3: Tool results ke saath streaming synthesis karo
-    
-    DESIGN DECISION:
-    ================
-    Hum coordinator.handle_message() ko puri tarah nahi hata rahe.
-    Routing logic wahan hi best hai. Hum sirf FINAL LLM CALL ko
-    streaming se replace karte hain.
-    
+    Fetch a streaming response from Vertex AI and send it over WebSocket.
+
+    Handles two paths:
+
+    PATH A — Tool-Augmented Streaming (Market queries):
+    ---------------------------------------------------
+    Step 1: Coordinator routing (which agent?)
+    Step 2: MCP tools execute (Alpha Vantage calls, blocking ~1-2s)
+    Step 3: stream_after_tools() streams the synthesis using tool results
+    User sees tokens immediately after tools complete.
+
+    PATH B — Direct Streaming (Greeting, Risk, General):
+    ----------------------------------------------------
+    Step 1: Coordinator routing
+    Step 2: stream_response_async() streams directly from Vertex AI
+    No tool phase.
+
+    Args:
+        websocket: The active WebSocket connection
+        user_text: The user's message
+        conv_id: Conversation ID
+        context: Session context dict (username, desk_id, etc.)
+        safe_send_json: WebSocket send helper that handles disconnects gracefully
+
     Returns:
-        Full response text (for persistence) ya None if error
+        Full assembled response text (for persistence), or None on error
     """
     username = context.get("username")
     full_response = ""
     start_time = time.monotonic()
-    
-    # Step 1: Routing decide karo
-    # Coordinator ka routing logic use karo — agent determine karo
+
+    # Step 1: Determine which agent handles this query
     try:
         routing_decision = await coordinator_agent._route_intent(
             user_text,
@@ -97,33 +178,33 @@ async def _stream_vertex_response(
             username=username,
         )
     except Exception as route_err:
-        logger.warning("[WebSocket:Streaming] Routing failed, using market default: %s", route_err)
+        logger.warning("[WebSocket:Streaming] Routing failed, defaulting to market: %s", route_err)
         routing_decision = {"intent": "market", "sub_intent": "general", "confidence": 0.7}
-    
+
     agent_id = routing_decision.get("intent", "market")
     sub_intent = routing_decision.get("sub_intent", "general")
-    
+
     logger.info(
         "[WebSocket:Streaming] Stream path | agent=%s sub_intent=%s conv_id=%s",
         agent_id, sub_intent, conv_id
     )
-    
-    # Thinking state signal bhejo
+
+    # Signal to frontend that processing has started
     await safe_send_json({
         "type": "state",
         "state": "Thinking",
-        "detail": f"Streaming response from {agent_id} agent...",
+        "detail": f"Routing to {agent_id} agent...",
     })
-    
-    # Step 2: System instruction build karo agent ke hisaab se
+
+    # Step 2: Build system instruction for the agent
     from app.core.prompts import Prompts
-    
+
     if agent_id == "market":
         system_instruction = (
             Prompts.TRADER_SYSTEM_INSTRUCTION
             + "\nRole: Senior Interbank Market Analyst."
             + " Use professional trading desk language."
-            + " Structure: [Direct Answer] → [Market Insight] → [Trade Implication] → [Optional Follow-up]"
+            + " Structure: [Direct Answer] -> [Market Insight] -> [Trade Implication] -> [Optional Follow-up]"
         )
     elif agent_id == "risk":
         system_instruction = (
@@ -135,30 +216,21 @@ async def _stream_vertex_response(
     else:
         system_instruction = Prompts.TRADER_SYSTEM_INSTRUCTION
 
-    # Step 3: Model decide karo
+    # Step 3: Select model
     from app.core.config.settings import settings as app_settings
-    
-    # Heavy reasoning queries ke liye pro model
+
     needs_heavy = sub_intent in {"technical_indicator", "fundamental_analysis"}
     model_name = (
         app_settings.VERTEX_AI_REASONING_MODEL_NAME
         if needs_heavy
         else app_settings.VERTEX_AI_MODEL_NAME
     )
-    
-    # Step 4: Streaming karo
-    # Market agent ke liye: direct streaming (tools optional based on sub_intent)
-    # Non-market: direct streaming
-    
-    # Yahan hum streaming_service.stream_response_async() use karte hain
-    # Jo Vertex AI se real tokens stream karta hai
-    
-    # Prompt prepare karo context ke saath
+
+    # Step 4: Build contextual prompt
     from app.services.aidaan.runtime_context import runtime_context_service
-    
+
     base_prompt = f"User Query: {user_text}\n\nAgent: {agent_id}\nSub-Intent: {sub_intent}"
-    
-    # Context inject karo (same as existing build_prompt_context)
+
     try:
         contextual_prompt = runtime_context_service.build_prompt_context(
             base_prompt=base_prompt,
@@ -168,93 +240,173 @@ async def _stream_vertex_response(
     except Exception as ctx_err:
         logger.warning("[WebSocket:Streaming] Context build failed: %s", ctx_err)
         contextual_prompt = base_prompt
-    
-    # Thinking tokens enable karo agar pro model hai
+
+    # Thinking tokens only for pro reasoning models
     enable_thinking = (
         model_name == app_settings.VERTEX_AI_REASONING_MODEL_NAME
         and "pro" in model_name.lower()
     )
-    
+
     stream_error_occurred = False
-    
-    # *** MAIN STREAMING LOOP ***
-    # Yeh loop Vertex AI se har token receive karta hai aur WebSocket pe bhejta hai
-    async for chunk in streaming_service.stream_response_async(
-        prompt=contextual_prompt,
-        model_name=model_name,
-        system_instruction=system_instruction,
-        enable_thinking=enable_thinking,
-        conversation_id=conv_id,
-        username=username,
-    ):
-        chunk_dict = chunk.to_dict()
-        
-        if chunk.chunk_type == "thinking_token":
-            # Thinking token — frontend pe yellow box mein dikhao
-            sent = await safe_send_json({
-                "type": "thinking_token",
-                "content": chunk.content,
-                "token_count": chunk.token_count,
-                "elapsed_ms": chunk.metadata.get("elapsed_ms", 0),
-            })
-            if not sent:
-                logger.warning("[WebSocket:Streaming] WebSocket closed during thinking tokens")
+
+    # =========================================================================
+    # PATH A: Market agent — tools first, then stream synthesis
+    # =========================================================================
+    if agent_id == "market":
+        await safe_send_json({
+            "type": "state",
+            "state": "Thinking",
+            "detail": "Fetching market data...",
+        })
+
+        # Execute MCP tools (blocking phase — Alpha Vantage calls happen here)
+        tool_results = await _execute_market_tools(
+            user_text=user_text,
+            conv_id=conv_id,
+            username=username,
+            sub_intent=sub_intent,
+            safe_send_json=safe_send_json,
+        )
+
+        await safe_send_json({
+            "type": "state",
+            "state": "Thinking",
+            "detail": "Streaming synthesis...",
+        })
+
+        # Stream the synthesis using tool results
+        # User sees tokens immediately after tools complete
+        async for chunk in streaming_service.stream_after_tools(
+            tool_results=tool_results,
+            original_prompt=contextual_prompt,
+            system_instruction=system_instruction,
+            model_name=model_name,
+            conversation_id=conv_id,
+            username=username,
+        ):
+            if chunk.chunk_type == "thinking_token":
+                sent = await safe_send_json({
+                    "type": "thinking_token",
+                    "content": chunk.content,
+                    "token_count": chunk.token_count,
+                    "elapsed_ms": chunk.metadata.get("elapsed_ms", 0),
+                })
+                if not sent:
+                    break
+
+            elif chunk.chunk_type == "response_token":
+                full_response += chunk.content
+                sent = await safe_send_json({
+                    "type": "response_token",
+                    "content": chunk.content,
+                    "token_count": chunk.token_count,
+                    "elapsed_ms": chunk.metadata.get("elapsed_ms", 0),
+                })
+                if not sent:
+                    break
+
+            elif chunk.chunk_type == "stream_complete":
+                full_response = chunk.content
+                total_ms = (time.monotonic() - start_time) * 1000
+
+                await safe_send_json({
+                    "type": "stream_summary",
+                    "ttft_ms": chunk.metadata.get("ttft_ms"),
+                    "latency_ms": round(total_ms, 2),
+                    "thinking_token_count": chunk.metadata.get("thinking_token_count", 0),
+                    "response_token_count": chunk.metadata.get("response_token_count", 0),
+                    "model": model_name,
+                    "agent": agent_id,
+                })
+
+                if "IDBX Data Provenance" not in full_response:
+                    full_response += "\n\n**IDBX Data Provenance:** Alpha Vantage Live Feed"
+
+                logger.info(
+                    "[WebSocket:Streaming] Market stream complete | ttft=%s ms | total=%.1f ms | conv_id=%s",
+                    chunk.metadata.get("ttft_ms"),
+                    total_ms,
+                    conv_id,
+                )
+
+            elif chunk.chunk_type == "stream_error":
+                stream_error_occurred = True
+                logger.error("[WebSocket:Streaming] Market stream error: %s", chunk.content)
+                await safe_send_json({
+                    "type": "stream_error",
+                    "error": chunk.content,
+                    "agent": agent_id,
+                })
                 break
-        
-        elif chunk.chunk_type == "response_token":
-            # Response token — frontend pe main chat bubble mein append karo
-            full_response += chunk.content
-            sent = await safe_send_json({
-                "type": "response_token",
-                "content": chunk.content,
-                "token_count": chunk.token_count,
-                "elapsed_ms": chunk.metadata.get("elapsed_ms", 0),
-            })
-            if not sent:
-                logger.warning("[WebSocket:Streaming] WebSocket closed during response tokens")
+
+    # =========================================================================
+    # PATH B: Non-market agents — direct streaming, no tools
+    # =========================================================================
+    else:
+        async for chunk in streaming_service.stream_response_async(
+            prompt=contextual_prompt,
+            model_name=model_name,
+            system_instruction=system_instruction,
+            enable_thinking=enable_thinking,
+            conversation_id=conv_id,
+            username=username,
+        ):
+            if chunk.chunk_type == "thinking_token":
+                sent = await safe_send_json({
+                    "type": "thinking_token",
+                    "content": chunk.content,
+                    "token_count": chunk.token_count,
+                    "elapsed_ms": chunk.metadata.get("elapsed_ms", 0),
+                })
+                if not sent:
+                    break
+
+            elif chunk.chunk_type == "response_token":
+                full_response += chunk.content
+                sent = await safe_send_json({
+                    "type": "response_token",
+                    "content": chunk.content,
+                    "token_count": chunk.token_count,
+                    "elapsed_ms": chunk.metadata.get("elapsed_ms", 0),
+                })
+                if not sent:
+                    break
+
+            elif chunk.chunk_type == "stream_complete":
+                full_response = chunk.content
+                total_ms = (time.monotonic() - start_time) * 1000
+
+                await safe_send_json({
+                    "type": "stream_summary",
+                    "ttft_ms": chunk.metadata.get("ttft_ms"),
+                    "latency_ms": round(total_ms, 2),
+                    "thinking_token_count": chunk.metadata.get("thinking_token_count", 0),
+                    "response_token_count": chunk.metadata.get("response_token_count", 0),
+                    "model": model_name,
+                    "agent": agent_id,
+                })
+
+                logger.info(
+                    "[WebSocket:Streaming] Direct stream complete | agent=%s | ttft=%s ms | total=%.1f ms | conv_id=%s",
+                    agent_id,
+                    chunk.metadata.get("ttft_ms"),
+                    total_ms,
+                    conv_id,
+                )
+
+            elif chunk.chunk_type == "stream_error":
+                stream_error_occurred = True
+                logger.error("[WebSocket:Streaming] Stream error: %s", chunk.content)
+                await safe_send_json({
+                    "type": "stream_error",
+                    "error": chunk.content,
+                    "agent": agent_id,
+                })
                 break
-        
-        elif chunk.chunk_type == "stream_complete":
-            # Streaming khatam — stats bhejo
-            full_response = chunk.content  # Full assembled text
-            total_ms = (time.monotonic() - start_time) * 1000
-            
-            await safe_send_json({
-                "type": "stream_summary",
-                "ttft_ms": chunk.metadata.get("ttft_ms"),
-                "latency_ms": round(total_ms, 2),
-                "thinking_token_count": chunk.metadata.get("thinking_token_count", 0),
-                "response_token_count": chunk.metadata.get("response_token_count", 0),
-                "model": model_name,
-                "agent": agent_id,
-            })
-            
-            # AIDAAN Data Provenance footer
-            if agent_id == "market" and "IDBX Data Provenance" not in full_response:
-                full_response += "\n\n**IDBX Data Provenance:** Alpha Vantage Live Feed"
-            
-            logger.info(
-                "[WebSocket:Streaming] Complete | agent=%s | ttft=%s ms | total=%.1f ms | conv_id=%s",
-                agent_id,
-                chunk.metadata.get("ttft_ms"),
-                total_ms,
-                conv_id,
-            )
-        
-        elif chunk.chunk_type == "stream_error":
-            # Error hua — frontend ko batao
-            stream_error_occurred = True
-            logger.error("[WebSocket:Streaming] Stream error: %s", chunk.content)
-            await safe_send_json({
-                "type": "stream_error",
-                "error": chunk.content,
-                "agent": agent_id,
-            })
-            break
-    
+
     if stream_error_occurred or not full_response:
         return None
-    
+
     return full_response
 
 
@@ -262,26 +414,26 @@ async def _stream_vertex_response(
 async def aidaan_websocket(websocket: WebSocket):
     """
     Real-time WebSocket endpoint for AIDAAN.
-    
-    ADDED: Streaming support via enable_streaming flag.
-    UNCHANGED: All existing non-streaming functionality.
-    
+
+    Streaming is opt-in via the enable_streaming flag in the message payload.
+    All existing non-streaming functionality is unchanged.
+
     Message format for streaming:
     {
         "type": "chat",
         "text": "What is AAPL price?",
-        "enable_streaming": true,  ← NEW FLAG
+        "enable_streaming": true,
         "user_id": "trader-001",
         "conversation_id": "conv_abc"
     }
-    
-    Server response format for streaming:
+
+    Server response sequence for streaming:
     1. {"type": "state", "state": "Thinking", "detail": "..."}
-    2. {"type": "thinking_token", "content": "...", "token_count": N}  ← optional
-    3. {"type": "response_token", "content": "The", "token_count": 1}
-    4. {"type": "response_token", "content": " market", "token_count": 2}
+    2. {"type": "state", "state": "Thinking", "detail": "Fetching get_stock_quote..."}  <- tool pulse
+    3. {"type": "response_token", "content": "AAPL", "token_count": 1}
+    4. {"type": "response_token", "content": " is", "token_count": 2}
     ... (more tokens)
-    5. {"type": "stream_summary", "ttft_ms": 234.5, "latency_ms": 2150.3}
+    5. {"type": "stream_summary", "ttft_ms": 234.5, "latency_ms": 2150.3, ...}
     """
     await websocket.accept()
 
@@ -325,11 +477,10 @@ async def aidaan_websocket(websocket: WebSocket):
             msg_type = message.get("type", "chat")
             conv_id = message.get("conversation_id")
             user_id = message.get("user_id", "")
-            
-            # *** NEW: Streaming flag check ***
-            # Client is message mein enable_streaming: true bhejta hai
+
+            # Streaming opt-in flag — client sends enable_streaming: true to use streaming path
             enable_streaming = bool(message.get("enable_streaming", False))
-            
+
             user_session = operational_data_service.validate_user_session(user_id)
             if not user_session["allowed"]:
                 persistence_service.persist_login_event(str(user_id or ""), success=False)
@@ -381,17 +532,16 @@ async def aidaan_websocket(websocket: WebSocket):
                 }):
                     break
 
-                # *** STREAMING vs NON-STREAMING DECISION ***
                 if enable_streaming:
-                    # =========================================
-                    # STREAMING PATH — New Feature
-                    # Vertex AI se real token-by-token response
-                    # =========================================
+                    # =========================================================
+                    # STREAMING PATH
+                    # Type 2: Tools execute first (blocking), then Vertex streams
+                    # =========================================================
                     logger.info(
                         "[WebSocket] STREAMING mode | user=%s | conv_id=%s | text_preview=%s",
                         user_id, conv_id, user_text[:60]
                     )
-                    
+
                     try:
                         full_response = await _stream_vertex_response(
                             websocket=websocket,
@@ -400,9 +550,8 @@ async def aidaan_websocket(websocket: WebSocket):
                             context=context,
                             safe_send_json=safe_send_json,
                         )
-                        
+
                         if full_response:
-                            # Streaming ke baad bhi persist karo
                             persistence_service.persist_message_exchange(
                                 conversation_id=conv_id,
                                 username=user_id,
@@ -418,21 +567,20 @@ async def aidaan_websocket(websocket: WebSocket):
                             )
                     except Exception as stream_err:
                         logger.error("[WebSocket] Streaming failed: %s", stream_err)
-                        # Fallback: non-streaming response bhejo
                         if connection_open:
                             await safe_send_json({
                                 "type": "stream_error",
                                 "error": f"Streaming failed, please retry: {str(stream_err)}",
                             })
-                    
+
                     dormant_sent = False
-                    continue  # Next message ke liye wait karo
+                    continue
 
                 else:
-                    # =========================================
+                    # =========================================================
                     # NON-STREAMING PATH — Unchanged
                     # Existing coordinator_agent flow
-                    # =========================================
+                    # =========================================================
                     if not await safe_send_json({
                         "type": "state",
                         "state": "Thinking",

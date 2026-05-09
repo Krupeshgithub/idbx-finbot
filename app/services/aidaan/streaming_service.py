@@ -524,8 +524,19 @@ class StreamingService:
         for i, tool_result in enumerate(tool_results):
             tool_name = tool_result.get("tool_name", f"tool_{i}")
             result = tool_result.get("result", {})
+            # Serialize the result; use a generous limit (12 KB) so that
+            # multi-day OHLCV tables and news feeds are not silently truncated.
+            # The synthesis model only needs the data, not the full raw payload,
+            # so we cap at 12 000 chars which covers ~10-day OHLCV comfortably.
+            serialized = json.dumps(result, ensure_ascii=False, default=str)
+            if len(serialized) > 12000:
+                logger.warning(
+                    "[StreamingService] Tool result for '%s' truncated from %d to 12000 chars",
+                    tool_name, len(serialized),
+                )
+                serialized = serialized[:12000] + "... [truncated]"
             tool_context_parts.append(
-                f"Tool: {tool_name}\nResult: {json.dumps(result, ensure_ascii=False, default=str)[:2000]}"
+                f"Tool: {tool_name}\nResult: {serialized}"
             )
 
         tool_context = "\n\n".join(tool_context_parts)
@@ -534,11 +545,17 @@ class StreamingService:
         synthesis_prompt = (
             f"{original_prompt}\n\n"
             f"=== TOOL RESULTS ===\n{tool_context}\n\n"
-            f"=== INSTRUCTIONS ===\n"
-            f"Based on the tool results above, provide a professional trader response.\n"
-            f"Structure: [Direct Answer] -> [Market Insight] -> [Trade Implication] -> [Optional Follow-up]\n"
-            f"CRITICAL: Return ONLY plain text — no JSON, no markdown code blocks.\n"
-            f"Use professional trading desk language."
+            f"=== SYNTHESIS INSTRUCTIONS ===\n"
+            f"Using the tool results above, write a complete professional trader response.\n"
+            f"Structure (MANDATORY — all 4 parts required):\n"
+            f"  [Direct Answer] — State the key fact(s) directly (price, rate, data summary).\n"
+            f"  [Market Insight] — Explain what the data means in trading terms (flows, momentum, context).\n"
+            f"  [Trade Implication] — What should the trader infer or act on?\n"
+            f"  [Optional Follow-up] — Offer one relevant next-step question.\n"
+            f"Formatting: Use Markdown tables for any tabular data (OHLCV, historical series, rankings).\n"
+            f"Language: Mirror the user's language (Hinglish, English, etc.).\n"
+            f"IMPORTANT: Write a FULL response — do not truncate or summarise prematurely.\n"
+            f"Do NOT wrap the response in JSON or code blocks."
         )
 
         logger.info(
@@ -556,6 +573,101 @@ class StreamingService:
             username=username,
         ):
             yield chunk
+
+    async def stream_text(
+        self,
+        text: str,
+        *,
+        conversation_id: Optional[str] = None,
+        chunk_size: int = 6,
+    ):
+        """
+        Stream a pre-built text string word-by-word as StreamChunk objects.
+
+        This is used when the full response has already been generated (e.g. via
+        the non-streaming coordinator path) and we want to deliver it to the
+        client with the same streaming UX — progressive token delivery, TTFT
+        tracking, and a final stream_complete chunk.
+
+        This guarantees that the streaming and non-streaming paths produce
+        IDENTICAL content, because both use the same underlying agent pipeline.
+        Only the delivery mechanism differs.
+
+        Args:
+            text: The complete pre-built response text to stream.
+            conversation_id: For logging/tracing.
+            chunk_size: Number of words per emitted chunk (default 6).
+                        Smaller = smoother animation, larger = fewer round-trips.
+
+        Yields:
+            StreamChunk with types: response_token, stream_complete
+        """
+        if not text or not text.strip():
+            yield StreamChunk(
+                chunk_type="stream_complete",
+                content="",
+                token_count=0,
+                metadata={"ttft_ms": None, "total_latency_ms": 0,
+                          "thinking_token_count": 0, "response_token_count": 0},
+            )
+            return
+
+        start_time = time.monotonic()
+        words = text.split(" ")
+        token_count = 0
+        first_chunk_time: Optional[float] = None
+
+        # Emit words in small batches so the client sees progressive rendering
+        for i in range(0, len(words), chunk_size):
+            batch = words[i : i + chunk_size]
+            # Re-join with spaces; add trailing space so words don't merge
+            # across chunk boundaries on the client side.
+            content = " ".join(batch)
+            if i + chunk_size < len(words):
+                content += " "
+
+            if first_chunk_time is None:
+                first_chunk_time = time.monotonic()
+
+            token_count += 1
+            elapsed_ms = round((time.monotonic() - start_time) * 1000, 2)
+            yield StreamChunk(
+                chunk_type="response_token",
+                content=content,
+                token_count=token_count,
+                metadata={"elapsed_ms": elapsed_ms},
+            )
+            # Tiny yield to allow the event loop to flush the WebSocket send
+            await asyncio.sleep(0)
+
+        total_ms = round((time.monotonic() - start_time) * 1000, 2)
+        ttft_ms = (
+            round((first_chunk_time - start_time) * 1000, 2)
+            if first_chunk_time else None
+        )
+
+        logger.info(
+            "[StreamingService] stream_text complete | words=%d chunks=%d ttft_ms=%s total_ms=%s conv_id=%s",
+            len(words),
+            token_count,
+            ttft_ms,
+            total_ms,
+            conversation_id,
+        )
+
+        yield StreamChunk(
+            chunk_type="stream_complete",
+            content=text,
+            token_count=token_count,
+            metadata={
+                "ttft_ms": ttft_ms,
+                "total_latency_ms": total_ms,
+                "thinking_token_count": 0,
+                "response_token_count": token_count,
+                "model": "pre-built",
+                "conversation_id": conversation_id,
+            },
+        )
 
 
 # Global singleton instance

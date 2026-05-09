@@ -721,13 +721,58 @@ class LLMClient:
 
     def _repair_json(self, json_str: str) -> str:
         """
-        Attempt to repair a truncated JSON string by closing strings and brackets.
+        Attempt to repair a malformed JSON string.
+
+        Handles two common failure modes from LLM output:
+        1. Truncated JSON — closes unclosed strings and brackets.
+        2. Literal control characters inside JSON strings — the model sometimes
+           emits raw newlines (\\n), tabs (\\t), or carriage returns (\\r) inside
+           a JSON string value instead of the required escape sequences.
+           json.loads rejects these, so we escape them before attempting to parse.
         """
+        # --- Pass 1: escape literal control characters inside string values ---
+        # Walk character-by-character and replace bare \n / \r / \t that appear
+        # inside a JSON string (i.e. between unescaped double-quotes) with their
+        # proper JSON escape sequences.
+        escaped_chars = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+        result_chars: list[str] = []
+        in_string = False
+        i = 0
+        while i < len(json_str):
+            ch = json_str[i]
+            if ch == '\\' and i + 1 < len(json_str):
+                # Keep existing escape sequences intact
+                result_chars.append(ch)
+                result_chars.append(json_str[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = not in_string
+                result_chars.append(ch)
+                i += 1
+                continue
+            if in_string and ch in escaped_chars:
+                result_chars.append(escaped_chars[ch])
+                i += 1
+                continue
+            result_chars.append(ch)
+            i += 1
+
+        cleaned = "".join(result_chars)
+
+        # Quick check: if the cleaned string is already valid JSON, return it now.
+        try:
+            json.loads(cleaned)
+            return cleaned
+        except json.JSONDecodeError:
+            pass
+
+        # --- Pass 2: close unclosed strings and brackets (truncation repair) ---
         stack = []
         is_in_string = False
         is_escaped = False
-        
-        for char in json_str:
+
+        for char in cleaned:
             if is_escaped:
                 is_escaped = False
                 continue
@@ -748,20 +793,56 @@ class LLMClient:
                 elif char == ']':
                     if stack and stack[-1] == ']':
                         stack.pop()
-        
-        repaired = json_str
+
+        repaired = cleaned
         if is_in_string:
             repaired += '"'
         while stack:
             repaired += stack.pop()
-        
+
         return repaired
+
+    def _escape_literal_newlines_in_strings(self, text: str) -> str:
+        """
+        Pre-process raw LLM output to escape literal newlines/tabs that appear
+        inside JSON string values.  The model sometimes emits:
+            {"reply": "line1\nline2"}   ← raw newline, not \\n
+        which is invalid JSON.  This pass converts those to proper escapes
+        BEFORE we attempt json.loads, so the fast-path succeeds.
+        """
+        result: list[str] = []
+        in_string = False
+        i = 0
+        escape_map = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+        while i < len(text):
+            ch = text[i]
+            if ch == '\\' and i + 1 < len(text):
+                result.append(ch)
+                result.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = not in_string
+                result.append(ch)
+                i += 1
+                continue
+            if in_string and ch in escape_map:
+                result.append(escape_map[ch])
+                i += 1
+                continue
+            result.append(ch)
+            i += 1
+        return "".join(result)
 
     def _extract_json(self, raw_text: str) -> Dict[str, Any]:
         if not raw_text or not raw_text.strip():
             raise ValueError("Empty or whitespace text provided for JSON extraction")
 
         clean = re.sub(r"```(?:json)?", "", raw_text).replace("```", "").strip()
+
+        # Pre-process: escape any literal newlines/tabs inside JSON string values.
+        # The model sometimes emits raw \n inside a string value which is invalid JSON.
+        clean = self._escape_literal_newlines_in_strings(clean)
 
         # Fast path: try the whole cleaned string first (handles well-formed single objects)
         try:

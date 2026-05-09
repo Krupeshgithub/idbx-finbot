@@ -3,6 +3,7 @@ Institutional market agent for Vertex-first market orchestration.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -173,9 +174,11 @@ class MarketAgent(BaseAgent):
             + " 1. TICKER RESOLUTION: Common company names map to tickers as follows:\n"
             + "    - Google → GOOGL, Apple → AAPL, Microsoft → MSFT, Amazon → AMZN, Tesla → TSLA\n"
             + "    - Meta/Facebook → META, Nvidia → NVDA, Intel → INTC, AMD → AMD, IBM → IBM\n"
+            + "    - Exxon/Exxon Mobil/Exxon Mobile → XOM, Chevron → CVX, Shell → SHEL\n"
+            + "    - Netflix → NFLX, Uber → UBER, Airbnb → ABNB, PayPal → PYPL\n"
             + "    - If user says 'google price', immediately use ticker GOOGL. Do NOT call search_ticker for common names.\n"
             + " 2. EXACT NUMBERS: If the user asks for exact stock prices/dates, MUST use Alpha Vantage exact data.\n"
-            + " 3. TICKER VALIDATION: If search_ticker returns no matches or an error, you MUST inform the user that the ticker/company was not found. NEVER substitute a different company or use a 'sector representative'. Be honest about data availability.\n"
+            + " 3. TICKER VALIDATION: If search_ticker returns no matches or an error, you MUST try common ticker aliases first (e.g. 'Exxon Mobile' / 'Exxon Mobil' → XOM, 'Alphabet' → GOOGL, 'Meta' → META). If no alias resolves it, inform the user the ticker was not found. NEVER fabricate data for an unresolved ticker.\n"
             + " 4. AGENT-TO-AGENT (A2A) COLLABORATION: Before providing trading advice, order staging, or confirming a position size, you MUST internally consult the 'risk' agent using your `consult_specialist_agent` tool. This ensures desk limits are securely verified within the Privacy Vault.\n"
             + " 5. If the current user turn is brief or ambiguous, use recent conversation memory and any pending follow-up prompt to infer the intended continuation.\n"
             + " 6. When the previous assistant turn offered optional next-step analysis and the user appears to accept it, continue that analysis instead of discussing the ambiguity.\n"
@@ -247,6 +250,7 @@ class MarketAgent(BaseAgent):
         conversation_id: str,
         context: Optional[Dict[str, Any]] = None,
         tool_callback: Optional[callable] = None,
+        enable_streaming: bool = False,
     ) -> AidaanMessageResponse:
         """
         Run a full Vertex-driven market workflow for the user query.
@@ -255,6 +259,12 @@ class MarketAgent(BaseAgent):
         - identifying the correct instrument or company
         - choosing the relevant MCP tools
         - synthesizing the final trader-facing answer
+
+        Args:
+            enable_streaming: If True, returns a response with streaming_chunks
+                             generator instead of a pre-built reply. The caller
+                             must iterate over response.streaming_chunks to get
+                             real-time token-by-token output.
         """
         logger.info("[MarketAgent] Analyzing market query via Vertex-first orchestration: %s", text)
         market_start = time.monotonic()
@@ -288,16 +298,33 @@ class MarketAgent(BaseAgent):
 
         orchestration_prompt = Prompts.MARKET_ORCHESTRATION.format(text=text)
         logger.info(
-            "[MarketAgent] Dispatching market generation | model=%s tool_mode=%s fast_path=%s",
+            "[MarketAgent] Dispatching market generation | model=%s tool_mode=%s fast_path=%s streaming=%s",
             model_name,
             tool_mode,
             fast_path_kind,
+            enable_streaming,
         )
         
         llm_start = time.monotonic()
         logger.info(f"[TIMING] Starting LLM orchestration | model={model_name} | tool_mode={tool_mode}")
 
         try:
+            # If streaming is enabled AND tools are needed, use the hybrid approach:
+            # 1. Call tools synchronously (blocking) to gather complete data
+            # 2. Stream the synthesis phase token-by-token
+            if enable_streaming and tool_mode == "full":
+                return await self._handle_message_streaming(
+                    text=text,
+                    orchestration_prompt=orchestration_prompt,
+                    conversation_id=conversation_id,
+                    model_name=model_name,
+                    sub_intent=sub_intent,
+                    control_signal=control_signal,
+                    context=context,
+                    tool_callback=tool_callback,
+                )
+
+            # Non-streaming path (original behavior)
             response_data = await self.generate_json_response(
                 orchestration_prompt,
                 conversation_id=conversation_id,
@@ -337,6 +364,83 @@ class MarketAgent(BaseAgent):
                 error=exc,
                 model_info=self.get_model_info(model_override=model_name),
             )
+
+    async def _handle_message_streaming(
+        self,
+        text: str,
+        orchestration_prompt: str,
+        conversation_id: str,
+        model_name: str,
+        sub_intent: str,
+        control_signal: str,
+        context: Dict[str, Any],
+        tool_callback: Optional[callable],
+    ) -> AidaanMessageResponse:
+        """
+        Streaming-enabled market workflow:
+        1. Phase 1 (Blocking): Call MCP tools and gather complete data
+        2. Phase 2 (Streaming): Stream the synthesis token-by-token
+
+        Returns an AidaanMessageResponse with streaming_chunks generator attached.
+        The caller must iterate over response.streaming_chunks to get real-time output.
+        """
+        from app.core.llm_client import llm_client
+        from app.services.aidaan.streaming_service import streaming_service
+
+        logger.info("[MarketAgent] Streaming mode | Phase 1: Gathering tool data...")
+
+        # Phase 1: Call tools synchronously (blocking) to get complete data
+        # This uses the same MCP tool loop as non-streaming, ensuring identical
+        # tool selection and data gathering logic.
+        tool_results_raw = await llm_client.generate_json(
+            prompt=orchestration_prompt,
+            model_override=model_name,
+            use_mcp_tools=True,
+            tool_callback=tool_callback,
+            system_instruction=self._build_market_system_instruction(sub_intent, control_signal),
+        )
+
+        logger.info("[MarketAgent] Streaming mode | Phase 2: Streaming synthesis...")
+
+        # Phase 2: Stream the synthesis using the gathered tool data
+        # Build a synthesis prompt that includes the tool results as context
+        tool_context = f"Tool Results:\n{json.dumps(tool_results_raw, ensure_ascii=False, indent=2)[:12000]}"
+        synthesis_prompt = (
+            f"User Query: {text}\n\n"
+            f"{tool_context}\n\n"
+            f"=== SYNTHESIS INSTRUCTIONS ===\n"
+            f"Using the tool results above, write a complete professional trader response.\n"
+            f"Structure (MANDATORY — all 4 parts required):\n"
+            f"  [Direct Answer] — State the key fact(s) directly (price, rate, data summary).\n"
+            f"  [Market Insight] — Explain what the data means in trading terms (flows, momentum, context).\n"
+            f"  [Trade Implication] — What should the trader infer or act on?\n"
+            f"  [Optional Follow-up] — Offer one relevant next-step question.\n"
+            f"Formatting: Use Markdown tables for any tabular data (OHLCV, historical series, rankings).\n"
+            f"Language: Mirror the user's language (Hinglish, English, etc.).\n"
+            f"IMPORTANT: Write a FULL response — do not truncate or summarise prematurely.\n"
+            f"Do NOT wrap the response in JSON or code blocks — return plain text only."
+        )
+
+        # Create a response object with a streaming_chunks generator attached
+        # The caller will iterate over this to get real-time tokens
+        response = self.build_message_response(
+            reply="",  # Will be populated by streaming
+            bullets=[],
+            conversation_id=conversation_id,
+            model_info=self.get_model_info(model_override=model_name),
+        )
+
+        # Attach the streaming generator
+        response.streaming_chunks = streaming_service.stream_response_async(
+            prompt=synthesis_prompt,
+            model_name=model_name,
+            system_instruction=self._build_market_system_instruction(sub_intent, control_signal),
+            enable_thinking=False,
+            conversation_id=conversation_id,
+            username=context.get("username"),
+        )
+
+        return response
 
     def get_capabilities(self) -> List[str]:
         """

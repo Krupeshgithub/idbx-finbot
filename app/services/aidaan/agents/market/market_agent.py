@@ -395,18 +395,38 @@ class MarketAgent(BaseAgent):
         # This uses the same MCP tool loop as non-streaming, ensuring identical
         # tool selection and data gathering logic.
         # 
-        # IMPORTANT: We pass the orchestration prompt which asks for tool execution,
-        # NOT synthesis. The model will call MCP tools and return their results.
-        # We then use those raw results for Phase 2 synthesis.
+        # CRITICAL FIX: Use a TOOL-ONLY prompt to prevent cache from returning
+        # pre-synthesized responses. The orchestration_prompt asks for synthesis,
+        # which causes cache hits to return complete answers, breaking streaming.
+        # 
+        # Instead, we use a tool-execution-only prompt that explicitly asks the
+        # model to ONLY call tools and return raw data, NOT synthesize.
+        tool_only_prompt = (
+            f"User Query: {text}\n\n"
+            f"=== TOOL EXECUTION PHASE ===\n"
+            f"You are in tool execution mode. Your ONLY job is to:\n"
+            f"1. Identify which Alpha Vantage tools are needed for this query\n"
+            f"2. Call those tools with the correct parameters\n"
+            f"3. Return the raw tool results as JSON\n\n"
+            f"DO NOT synthesize a response. DO NOT write a trader answer.\n"
+            f"ONLY execute tools and return their raw data.\n\n"
+            f"Common ticker mappings:\n"
+            f"- Apple → AAPL, Google → GOOGL, Microsoft → MSFT, Amazon → AMZN\n"
+            f"- Tesla → TSLA, Meta → META, Nvidia → NVDA, Exxon/Exxon Mobil/Exxon Mobile → XOM\n"
+            f"- Netflix → NFLX, Uber → UBER, Intel → INTC, AMD → AMD\n\n"
+            f"Execute all necessary tools NOW."
+        )
+        
         tool_results_raw = await llm_client.generate_json(
-            prompt=orchestration_prompt,
+            prompt=tool_only_prompt,
             model_override=model_name,
             use_mcp_tools=True,
             tool_callback=tool_callback,
-            system_instruction=self._build_market_system_instruction(sub_intent, control_signal),
-            # CRITICAL: Disable response cache for streaming to ensure fresh tool execution
-            # Cache can return pre-synthesized responses which breaks streaming
-            use_response_cache=False,
+            system_instruction=(
+                "You are a tool execution agent. Call the required Alpha Vantage tools "
+                "and return their raw results. Do NOT synthesize or write a response. "
+                "ONLY execute tools."
+            ),
         )
 
         logger.info("[MarketAgent] Streaming mode | Phase 2: Streaming synthesis...")
